@@ -38,6 +38,8 @@ from madness_model.config import NUM_SIMULATIONS, RANDOM_SEED
 # Type alias: a predict function takes (team_a_id, team_b_id) and returns P(A wins)
 PredictFn = Callable[[int, int], float]
 
+SAFE_PROB_EPS = 1e-6
+
 
 def simulate_game(
     team_a: int,
@@ -475,6 +477,13 @@ def predict_game(
     row = build_matchup_row(season, team_a_id, team_b_id, model_bundle.features)
     X = pd.DataFrame([row])[model_bundle.feature_cols].values
     prob_a_wins = float(model_bundle.model.predict_proba(X)[0, 1])
+    if np.isnan(prob_a_wins):
+        raise ValueError("Model returned NaN probability.")
+    if prob_a_wins < 0.0 or prob_a_wins > 1.0:
+        raise ValueError(
+            f"Model returned invalid probability {prob_a_wins}; expected [0, 1]."
+        )
+    prob_a_wins = float(np.clip(prob_a_wins, SAFE_PROB_EPS, 1.0 - SAFE_PROB_EPS))
     predicted_winner_id = team_a_id if prob_a_wins >= 0.5 else team_b_id
 
     return GamePrediction(
@@ -525,8 +534,10 @@ def simulate_single_bracket(
     from madness_model.bracket import ROUND_NAMES, SimulationResult
     from madness_model.build_matchups import build_matchup_row
 
+    _validate_bracket_state(bracket_state)
     deterministic = mode == "deterministic"
     rng = random.Random(random_state)
+    team_seed_map = _build_team_seed_map(bracket_state.initial_slots)
 
     # Slots dict: maps slot names to resolved team IDs.
     # Starts with the initial seed assignments; winner slots are added
@@ -544,25 +555,37 @@ def simulate_single_bracket(
             team_b = slots.get(game.right_source)
 
             if team_a is None or team_b is None:
-                # This should not happen in a valid, fully-populated bracket.
-                # Emit a warning so callers can diagnose incomplete brackets.
-                warnings.warn(
-                    f"Game {game.game_id!r}: one or both teams could not be resolved "
-                    f"(left_source={game.left_source!r} → {team_a}, "
-                    f"right_source={game.right_source!r} → {team_b}). "
-                    "This usually means build_initial_bracket did not populate all seed "
-                    "slots.  The game will be skipped.",
-                    stacklevel=2,
+                raise ValueError(
+                    f"Game {game.game_id!r} cannot start: unresolved participant slot(s) "
+                    f"{game.left_source!r} -> {team_a}, {game.right_source!r} -> {team_b}."
                 )
-                continue
 
             # Get win probability for team_a
             row = build_matchup_row(season, team_a, team_b, model_bundle.features)
             X = pd.DataFrame([row])[model_bundle.feature_cols].values
             prob_a = float(model_bundle.model.predict_proba(X)[0, 1])
+            if np.isnan(prob_a):
+                raise ValueError(f"Model returned NaN probability for game {game.game_id}.")
+            if prob_a < 0.0 or prob_a > 1.0:
+                raise ValueError(
+                    f"Model returned invalid probability {prob_a} for game {game.game_id}; "
+                    "expected [0, 1]."
+                )
+            prob_a = float(np.clip(prob_a, SAFE_PROB_EPS, 1.0 - SAFE_PROB_EPS))
 
             if deterministic:
-                winner = team_a if prob_a >= 0.5 else team_b
+                if prob_a > 0.5:
+                    winner = team_a
+                elif prob_a < 0.5:
+                    winner = team_b
+                else:
+                    winner = _break_deterministic_tie(
+                        team_a=team_a,
+                        team_b=team_b,
+                        team_seed_map=team_seed_map,
+                        season=season,
+                        features=model_bundle.features,
+                    )
             else:
                 winner = team_a if rng.random() < prob_a else team_b
 
@@ -718,3 +741,105 @@ def build_most_likely_bracket(
     return simulate_single_bracket(
         bracket_state, season, model_bundle, mode="deterministic"
     )
+
+
+def _build_team_seed_map(initial_slots: dict[str, int]) -> dict[int, int]:
+    team_seed_map: dict[int, int] = {}
+    for slot_name, team_id in initial_slots.items():
+        if "_S" not in slot_name:
+            continue
+        seed = int(slot_name.split("_S", 1)[1])
+        if team_id in team_seed_map:
+            raise ValueError(f"Duplicate team assignment detected for team_id={team_id}.")
+        team_seed_map[team_id] = seed
+    return team_seed_map
+
+
+def _pick_elo_column(features: pd.DataFrame) -> str | None:
+    for col in ("elo", "elo_post", "elo_pre", "elo_rating"):
+        if col in features.columns:
+            return col
+    return None
+
+
+def _break_deterministic_tie(
+    team_a: int,
+    team_b: int,
+    team_seed_map: dict[int, int],
+    season: int,
+    features: pd.DataFrame,
+) -> int:
+    seed_a = team_seed_map.get(team_a)
+    seed_b = team_seed_map.get(team_b)
+    if seed_a is not None and seed_b is not None and seed_a != seed_b:
+        return team_a if seed_a < seed_b else team_b
+
+    elo_col = _pick_elo_column(features)
+    if elo_col is not None:
+        try:
+            elo_a = float(features.loc[(season, team_a), elo_col])
+            elo_b = float(features.loc[(season, team_b), elo_col])
+            if elo_a != elo_b:
+                return team_a if elo_a > elo_b else team_b
+        except KeyError:
+            pass
+
+    return team_a if team_a < team_b else team_b
+
+
+def _validate_bracket_state(bracket_state: object) -> None:
+    from madness_model.bracket import ROUND_NAMES
+
+    games = list(bracket_state.games)
+    game_ids = {g.game_id for g in games}
+    if len(game_ids) != len(games):
+        raise ValueError("Bracket contains duplicate game IDs.")
+
+    if "CHAMP" not in game_ids:
+        raise ValueError("Bracket must contain CHAMP game.")
+
+    for g in games:
+        if g.round_name not in ROUND_NAMES:
+            raise ValueError(f"Game {g.game_id} has invalid round {g.round_name!r}.")
+        if not g.left_source or not g.right_source:
+            raise ValueError(f"Game {g.game_id} must have exactly two input sources.")
+        if g.game_id == "CHAMP":
+            if g.next_game_id is not None:
+                raise ValueError("Championship game cannot have next_game_id.")
+        else:
+            if g.next_game_id is None or g.next_game_id not in game_ids:
+                raise ValueError(
+                    f"Game {g.game_id} has invalid next_game_id={g.next_game_id!r}."
+                )
+
+        for source in (g.left_source, g.right_source):
+            if source.startswith("WINNER_"):
+                ref_id = source[len("WINNER_") :]
+                if ref_id not in game_ids:
+                    raise ValueError(
+                        f"Game {g.game_id} has invalid source reference {source!r}."
+                    )
+            elif source not in bracket_state.initial_slots:
+                raise ValueError(
+                    f"Game {g.game_id} has unresolved initial source slot {source!r}."
+                )
+
+    indegree: dict[str, int] = {g.game_id: 0 for g in games}
+    outgoing: dict[str, list[str]] = defaultdict(list)
+    for g in games:
+        if g.next_game_id is not None:
+            outgoing[g.game_id].append(g.next_game_id)
+            indegree[g.next_game_id] += 1
+
+    queue = [gid for gid, deg in indegree.items() if deg == 0]
+    visited = 0
+    while queue:
+        current = queue.pop()
+        visited += 1
+        for nxt in outgoing[current]:
+            indegree[nxt] -= 1
+            if indegree[nxt] == 0:
+                queue.append(nxt)
+
+    if visited != len(games):
+        raise ValueError("Bracket graph contains a cycle.")
