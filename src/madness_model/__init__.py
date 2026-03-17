@@ -16,6 +16,7 @@ baseline_model   Logistic regression baseline model.
 xgb_model        XGBoost training and inference.
 calibrate        Probability calibration helpers.
 evaluate         Evaluation metrics (accuracy, log-loss, Brier score).
+bracket          NCAA bracket data structures and graph representation.
 simulate_bracket Deterministic and Monte Carlo bracket simulation.
 visualize        Plots for calibration, feature importance, and team odds.
 """
@@ -39,6 +40,7 @@ __all__ = [
     "xgb_model",
     "calibrate",
     "evaluate",
+    "bracket",
     "simulate_bracket",
     "visualize",
 ]
