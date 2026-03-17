@@ -2,9 +2,27 @@
 data/raw/*
 data/interim/*
 data/processed/*
+
+# Keep folder placeholders
 !data/raw/.gitkeep
 !data/interim/.gitkeep
 !data/processed/.gitkeep
+
+# Keep Python scripts in data folders
+!data/raw/**/*.py
+!data/interim/**/*.py
+!data/processed/**/*.py
+!data/raw/*.py
+!data/interim/*.py
+!data/processed/*.py
+
+# Ignore CSV data files in data folders
+data/raw/**/*.csv
+data/interim/**/*.csv
+data/processed/**/*.csv
+data/raw/*.csv
+data/interim/*.csv
+data/processed/*.csv
 
 # Model artifacts
 models/*
