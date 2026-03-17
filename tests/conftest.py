@@ -21,6 +21,8 @@ from tests.fixtures.sample_brackets import (
     make_toy_8_team_bracket,
 )
 
+TOY_TEAM_SEED_MAP = {1: 1, 2: 4, 3: 2, 4: 3, 5: 5, 6: 6, 7: 7, 8: 8}
+
 
 @pytest.fixture
 def season() -> int:
@@ -64,13 +66,14 @@ def features_df(fake_full_64_team_bracket, season) -> pd.DataFrame:
     all_team_ids = set(fake_full_64_team_bracket.initial_slots.values()) | {1, 2, 3, 4, 5, 6, 7, 8}
     rows = []
     for team_id in sorted(all_team_ids):
+        seed = (team_id % 1000) if team_id >= 1000 else TOY_TEAM_SEED_MAP[team_id]
         rows.append(
             {
                 "season": season,
                 "team_id": team_id,
                 "team_id_feature": float(team_id),
                 "team_id_sq_feature": float(team_id * team_id),
-                "seed": float((team_id % 1000) if team_id >= 1000 else {1: 1, 2: 4, 3: 2, 4: 3, 5: 5, 6: 6, 7: 7, 8: 8}[team_id]),
+                "seed": float(seed),
                 "elo": float(2000 - team_id),
             }
         )

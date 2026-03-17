@@ -26,7 +26,6 @@ that adjacent pairs are first-round matchups (indices 0&1, 2&3, …).
 from __future__ import annotations
 
 import random
-import warnings
 from collections import Counter, defaultdict
 from typing import Callable, Dict, List
 
@@ -555,9 +554,17 @@ def simulate_single_bracket(
             team_b = slots.get(game.right_source)
 
             if team_a is None or team_b is None:
+                def _source_hint(source: str, resolved: int | None) -> str:
+                    if resolved is not None:
+                        return f"{source!r} -> {resolved}"
+                    if source.startswith("WINNER_"):
+                        return f"{source!r} unresolved (upstream winner not available)"
+                    return f"{source!r} unresolved (missing initial slot assignment)"
+
                 raise ValueError(
                     f"Game {game.game_id!r} cannot start: unresolved participant slot(s) "
-                    f"{game.left_source!r} -> {team_a}, {game.right_source!r} -> {team_b}."
+                    f"{_source_hint(game.left_source, team_a)}, "
+                    f"{_source_hint(game.right_source, team_b)}."
                 )
 
             # Get win probability for team_a
@@ -779,7 +786,7 @@ def _break_deterministic_tie(
         try:
             elo_a = float(features.loc[(season, team_a), elo_col])
             elo_b = float(features.loc[(season, team_b), elo_col])
-            if elo_a != elo_b:
+            if abs(elo_a - elo_b) > 1e-9:
                 return team_a if elo_a > elo_b else team_b
         except KeyError:
             pass

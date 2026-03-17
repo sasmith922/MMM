@@ -194,14 +194,11 @@ def test_advancing_teams_only_come_from_previous_round_winners(fake_full_64_team
     result = simulate_single_bracket(fake_full_64_team_bracket, season, seed_model_bundle, mode="deterministic")
     winners_seen = set(fake_full_64_team_bracket.initial_slots.values())
     for game in fake_full_64_team_bracket.games:
-        left = result.game_results.get(game.left_source.replace("WINNER_", ""))
-        right = result.game_results.get(game.right_source.replace("WINNER_", ""))
         for source in (game.left_source, game.right_source):
             if source.startswith("WINNER_"):
                 source_game = source.replace("WINNER_", "")
                 assert result.game_results[source_game] in winners_seen, "Advanced team must come from a previously won game."
         winners_seen.add(result.game_results[game.game_id])
-        _ = left, right  # keep explicit for readability in failure debugging
 
 
 def test_missing_team_in_initial_slot_raises(toy_4_team_bracket, toy_model_bundle, season):
