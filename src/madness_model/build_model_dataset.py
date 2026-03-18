@@ -3,19 +3,16 @@
 from __future__ import annotations
 
 import warnings
-from typing import Dict
 
 import numpy as np
 import pandas as pd
 
-from madness_model.feature_config import TARGET_COLUMN
+from madness_model.feature_config import TARGET_COL
 
-
-REQUIRED_MATCHUP_COLUMNS = ["season", "teamA_id", "teamB_id"]
+REQUIRED_MATCHUP_COLUMNS = ["season", "teamA_id", "teamB_id", TARGET_COL]
 REQUIRED_TEAM_PROFILE_COLUMNS = ["season", "team_id"]
 
-# Explicit mapping for canonical engineered diff names.
-DIFF_COLUMN_MAPPING: Dict[str, str] = {
+DIFF_COLUMN_MAPPING: dict[str, str] = {
     "seed_diff": "seed",
     "win_pct_diff": "win_pct",
     "ppg_diff": "points_per_game",
@@ -39,12 +36,10 @@ DIFF_COLUMN_MAPPING: Dict[str, str] = {
 }
 
 BOX_FEATURE_PREFIX = "box_"
-SEED_BUCKET_BINS = [-np.inf, 2, 5, np.inf]
-SEED_BUCKET_LABELS = [0, 1, 2]  # 0=close seed matchup, 1=moderate gap, 2=large gap
 
 
 def _require_columns(df: pd.DataFrame, required_cols: list[str], table_name: str) -> None:
-    missing = [c for c in required_cols if c not in df.columns]
+    missing = [column for column in required_cols if column not in df.columns]
     if missing:
         raise KeyError(f"{table_name} missing required columns: {missing}")
 
@@ -64,14 +59,67 @@ def _coerce_team_profiles(team_profiles_df: pd.DataFrame) -> pd.DataFrame:
 
     team_profiles["season"] = team_profiles["season"].astype(int)
     team_profiles["team_id"] = team_profiles["team_id"].astype(int)
-
     return team_profiles
 
 
-def _filter_regular_season_games(games_df: pd.DataFrame) -> pd.DataFrame:
-    """Try to filter out tournament/postseason rows before aggregation."""
-    filtered = games_df.copy()
+def _validate_unique_team_profiles(team_profiles: pd.DataFrame, *, strict: bool) -> None:
+    duplicated = team_profiles.duplicated(subset=["season", "team_id"], keep=False)
+    if not duplicated.any():
+        return
 
+    sample = team_profiles.loc[duplicated, ["season", "team_id"]].head(10).to_dict("records")
+    message = (
+        "team_profiles_df must be unique on (season, team_id). "
+        f"Found duplicates like: {sample}"
+    )
+    if strict:
+        raise ValueError(message)
+    warnings.warn(message, stacklevel=2)
+
+
+def _validate_matchup_joins(
+    matchups: pd.DataFrame,
+    team_profiles: pd.DataFrame,
+    *,
+    strict: bool,
+) -> None:
+    profile_keys = team_profiles[["season", "team_id"]].drop_duplicates()
+
+    missing_teamA_df = (
+        matchups[["season", "teamA_id"]]
+        .rename(columns={"teamA_id": "team_id"})
+        .merge(profile_keys, on=["season", "team_id"], how="left", indicator=True)
+        .loc[lambda df: df["_merge"] == "left_only", ["season", "team_id"]]
+        .drop_duplicates()
+    )
+    missing_teamB_df = (
+        matchups[["season", "teamB_id"]]
+        .rename(columns={"teamB_id": "team_id"})
+        .merge(profile_keys, on=["season", "team_id"], how="left", indicator=True)
+        .loc[lambda df: df["_merge"] == "left_only", ["season", "team_id"]]
+        .drop_duplicates()
+    )
+
+    missing_teamA = list(missing_teamA_df.head(5).itertuples(index=False, name=None))
+    missing_teamB = list(missing_teamB_df.head(5).itertuples(index=False, name=None))
+
+    if not missing_teamA and not missing_teamB:
+        return
+
+    message = (
+        "Tournament matchup rows are missing team profile joins. "
+        f"Missing teamA keys sample: {missing_teamA} | "
+        f"Missing teamB keys sample: {missing_teamB}"
+    )
+    if strict:
+        raise ValueError(message)
+    warnings.warn(message, stacklevel=2)
+
+
+def _filter_regular_season_games(games_df: pd.DataFrame) -> pd.DataFrame:
+    """Best-effort filtering to avoid using tournament/postseason games."""
+
+    filtered = games_df.copy()
     if "is_tourney" in filtered.columns:
         filtered = filtered[~filtered["is_tourney"].fillna(False)]
     if "is_postseason" in filtered.columns:
@@ -79,7 +127,6 @@ def _filter_regular_season_games(games_df: pd.DataFrame) -> pd.DataFrame:
     if "season_phase" in filtered.columns:
         phase = filtered["season_phase"].astype(str).str.lower()
         filtered = filtered[~phase.str.contains("tourn|post", regex=True, na=False)]
-
     return filtered
 
 
@@ -87,14 +134,15 @@ def _derive_games_boxscore_features(
     games_boxscores_df: pd.DataFrame,
     existing_team_feature_columns: list[str],
 ) -> pd.DataFrame:
-    """Build season/team supplemental features from processed game boxscores."""
+    """Build supplemental team-season features from games boxscores."""
+
     games = games_boxscores_df.copy()
 
     team_col_candidates = ["team_id", "TeamID", "teamID"]
-    team_col = next((c for c in team_col_candidates if c in games.columns), None)
+    team_col = next((col for col in team_col_candidates if col in games.columns), None)
     if team_col is None:
         warnings.warn(
-            "games_boxscores_df has no team_id-like column; skipping boxscore enrichment.",
+            "games_boxscores_df has no team_id-like column; skipping supplemental joins.",
             stacklevel=2,
         )
         return pd.DataFrame(columns=["season", "team_id"])
@@ -107,38 +155,23 @@ def _derive_games_boxscore_features(
     games = _filter_regular_season_games(games)
 
     candidate_numeric_cols = [
-        c
-        for c in games.select_dtypes(include=[np.number]).columns
-        if c
-        not in {
-            "season",
-            "team_id",
-            "opponent_team_id",
-            "opp_team_id",
-            "game_id",
-        }
+        column
+        for column in games.select_dtypes(include=[np.number]).columns
+        if column not in {"season", "team_id", "opponent_team_id", "opp_team_id", "game_id"}
     ]
 
-    if not candidate_numeric_cols:
-        return games[["season", "team_id"]].drop_duplicates().reset_index(drop=True)
-
-    # Only keep truly supplemental columns not already in team_profiles.
     supplemental_numeric_cols = [
-        c for c in candidate_numeric_cols if c not in set(existing_team_feature_columns)
+        column for column in candidate_numeric_cols if column not in set(existing_team_feature_columns)
     ]
 
     if not supplemental_numeric_cols:
-        return games[["season", "team_id"]].drop_duplicates().reset_index(drop=True)
+        return pd.DataFrame(columns=["season", "team_id"])
 
-    agg_df = (
+    return (
         games.groupby(["season", "team_id"], as_index=False)[supplemental_numeric_cols]
         .mean(numeric_only=True)
-        # Prefix supplemental aggregate features to distinguish them from
-        # team_profiles columns that are already season-level summaries.
-        .rename(columns={c: f"{BOX_FEATURE_PREFIX}{c}" for c in supplemental_numeric_cols})
+        .rename(columns={column: f"{BOX_FEATURE_PREFIX}{column}" for column in supplemental_numeric_cols})
     )
-
-    return agg_df
 
 
 def _merge_team_features(
@@ -149,38 +182,21 @@ def _merge_team_features(
     team_prefix: str,
 ) -> pd.DataFrame:
     """Merge a team-season feature table onto a matchup table for one side."""
-    side_features = features_df.rename(columns={"team_id": team_col_in_matchups})
 
+    side_features = features_df.rename(columns={"team_id": team_col_in_matchups})
     rename_cols = {
-        c: f"{team_prefix}_{c}"
-        for c in side_features.columns
-        if c not in {"season", team_col_in_matchups}
+        column: f"{team_prefix}_{column}"
+        for column in side_features.columns
+        if column not in {"season", team_col_in_matchups}
     }
     side_features = side_features.rename(columns=rename_cols)
 
-    merged = matchups_df.merge(
+    return matchups_df.merge(
         side_features,
         on=["season", team_col_in_matchups],
         how="left",
         validate="many_to_one",
     )
-    return merged
-
-
-def _validate_profile_joins(modeling_df: pd.DataFrame) -> None:
-    required_pairs = [
-        ("teamA_seed", "teamA_id"),
-        ("teamB_seed", "teamB_id"),
-    ]
-    for feature_col, team_col in required_pairs:
-        if feature_col in modeling_df.columns:
-            missing_rows = modeling_df[modeling_df[feature_col].isna()]
-            if not missing_rows.empty:
-                sample = missing_rows[["season", team_col]].head(5).to_dict("records")
-                raise ValueError(
-                    "Critical team-profile join produced missing rows. "
-                    f"Column '{feature_col}' has nulls; sample keys: {sample}"
-                )
 
 
 def _build_diff_features(modeling_df: pd.DataFrame) -> pd.DataFrame:
@@ -189,43 +205,6 @@ def _build_diff_features(modeling_df: pd.DataFrame) -> pd.DataFrame:
         teamB_col = f"teamB_{base_col}"
         if teamA_col in modeling_df.columns and teamB_col in modeling_df.columns:
             modeling_df[diff_col] = modeling_df[teamA_col] - modeling_df[teamB_col]
-
-    # Generic fallback: generate diffs for any common numeric teamA/teamB pair not yet covered.
-    teamA_numeric = {
-        col.removeprefix("teamA_"): col
-        for col in modeling_df.columns
-        if col.startswith("teamA_") and pd.api.types.is_numeric_dtype(modeling_df[col])
-    }
-    for base_col, teamA_col in teamA_numeric.items():
-        teamB_col = f"teamB_{base_col}"
-        if teamB_col not in modeling_df.columns:
-            continue
-        generic_diff_name = f"{base_col}_diff"
-        if generic_diff_name in modeling_df.columns:
-            continue
-        modeling_df[generic_diff_name] = modeling_df[teamA_col] - modeling_df[teamB_col]
-
-    return modeling_df
-
-
-def _safe_ratio(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
-    denominator_safe = denominator.replace(0, np.nan)
-    ratio = numerator / denominator_safe
-    return ratio.replace([np.inf, -np.inf], np.nan)
-
-
-def _build_ratio_features(modeling_df: pd.DataFrame) -> pd.DataFrame:
-    ratio_map = {
-        "win_pct_ratio": "win_pct",
-        "off_eff_ratio": "offensive_efficiency",
-        "net_eff_ratio": "net_efficiency",
-        "elo_ratio": "elo_pre_tourney",
-    }
-    for ratio_col, base_col in ratio_map.items():
-        teamA_col = f"teamA_{base_col}"
-        teamB_col = f"teamB_{base_col}"
-        if teamA_col in modeling_df.columns and teamB_col in modeling_df.columns:
-            modeling_df[ratio_col] = _safe_ratio(modeling_df[teamA_col], modeling_df[teamB_col])
     return modeling_df
 
 
@@ -244,8 +223,8 @@ def _build_context_features(modeling_df: pd.DataFrame) -> pd.DataFrame:
         abs_seed_diff = modeling_df["seed_diff"].abs()
         modeling_df["seed_bucket"] = pd.cut(
             abs_seed_diff,
-            bins=SEED_BUCKET_BINS,
-            labels=SEED_BUCKET_LABELS,
+            bins=[-np.inf, 2, 5, np.inf],
+            labels=[0, 1, 2],
         ).astype(float)
 
     if "teamA_seed" in modeling_df.columns and "teamB_seed" in modeling_df.columns:
@@ -258,44 +237,19 @@ def build_modeling_dataframe(
     team_profiles_df: pd.DataFrame,
     tourney_matchups_df: pd.DataFrame,
     games_boxscores_df: pd.DataFrame | None = None,
-    use_raw_team_features: bool = True,
-    use_diff_features: bool = True,
-    use_context_features: bool = True,
+    include_raw_team_features: bool = True,
+    include_diff_features: bool = True,
+    include_context_features: bool = True,
+    strict: bool = True,
 ) -> pd.DataFrame:
     """Build the final matchup-level modeling dataframe.
 
-    Parameters
-    ----------
-    team_profiles_df:
-        Team-season feature table with one row per ``(season, team_id)``.
-    tourney_matchups_df:
-        Supervised tournament matchup base table containing at least
-        ``season``, ``teamA_id``, ``teamB_id`` and optionally ``target`` and
-        matchup metadata columns.
-    games_boxscores_df:
-        Optional processed games/boxscores source used to derive supplemental
-        season-level team features not already in ``team_profiles_df``.
-    use_raw_team_features:
-        Whether to retain prefixed ``teamA_`` and ``teamB_`` raw columns.
-    use_diff_features:
-        Whether to create engineered difference/ratio matchup features.
-    use_context_features:
-        Whether to create context features (conference, seed buckets, etc.).
-
-    Returns
-    -------
-    pd.DataFrame
-        Matchup-level modeling dataframe ready for season-based train/test
-        splitting and model training.
-
-    Leakage note
-    ------------
-    This function assumes upstream processed tables already contain pre-tournament
-    frozen season features. We do not recompute any tournament-inclusive season
-    statistics. When aggregating games_boxscores, we apply best-effort filtering
-    hooks for postseason/tournament rows when explicit indicators are present.
+    TODO: Add richer matchup feature importance diagnostics.
+    TODO: Integrate bracket-simulation feature handoff for downstream runs.
     """
+
     team_profiles = _coerce_team_profiles(team_profiles_df)
+    _validate_unique_team_profiles(team_profiles, strict=strict)
 
     matchups = tourney_matchups_df.copy()
     _require_columns(matchups, REQUIRED_MATCHUP_COLUMNS, "tourney_matchups_df")
@@ -304,11 +258,10 @@ def build_modeling_dataframe(
     matchups["teamA_id"] = matchups["teamA_id"].astype(int)
     matchups["teamB_id"] = matchups["teamB_id"].astype(int)
 
-    modeling_df = matchups.copy()
+    _validate_matchup_joins(matchups, team_profiles, strict=strict)
 
-    # 1) Join team profile features for Team A and Team B.
     modeling_df = _merge_team_features(
-        modeling_df,
+        matchups,
         team_profiles,
         team_col_in_matchups="teamA_id",
         team_prefix="teamA",
@@ -320,13 +273,8 @@ def build_modeling_dataframe(
         team_prefix="teamB",
     )
 
-    _validate_profile_joins(modeling_df)
-
-    # 2) Optional enrichment from games boxscores.
     if games_boxscores_df is not None and not games_boxscores_df.empty:
-        team_feature_cols = [
-            c for c in team_profiles.columns if c not in {"season", "team_id"}
-        ]
+        team_feature_cols = [column for column in team_profiles.columns if column not in {"season", "team_id"}]
         supplemental = _derive_games_boxscore_features(games_boxscores_df, team_feature_cols)
         if not supplemental.empty:
             modeling_df = _merge_team_features(
@@ -342,32 +290,37 @@ def build_modeling_dataframe(
                 team_prefix="teamB",
             )
 
-    # 3) Engineered matchup features.
-    if use_diff_features:
+    if include_diff_features:
         modeling_df = _build_diff_features(modeling_df)
-        modeling_df = _build_ratio_features(modeling_df)
 
-    if use_context_features:
+    if include_context_features:
         modeling_df = _build_context_features(modeling_df)
 
-    if not use_raw_team_features:
+    if not include_raw_team_features:
         raw_cols = [
-            c
-            for c in modeling_df.columns
-            if c.startswith("teamA_") or c.startswith("teamB_")
+            column
+            for column in modeling_df.columns
+            if column.startswith("teamA_") or column.startswith("teamB_")
         ]
         modeling_df = modeling_df.drop(columns=raw_cols)
 
-    # Keep metadata + features; preserve target/metadata columns if present.
-    preferred_front = [
+    metadata_priority = [
         "season",
         "round",
-        "region",
         "teamA_id",
         "teamB_id",
-        TARGET_COLUMN,
+        TARGET_COL,
+        "teamA_seed",
+        "teamB_seed",
+        "region",
     ]
-    front_cols = [c for c in preferred_front if c in modeling_df.columns]
-    other_cols = [c for c in modeling_df.columns if c not in front_cols]
+    front_cols = [column for column in metadata_priority if column in modeling_df.columns]
+    other_cols = [column for column in modeling_df.columns if column not in front_cols]
+
+    # Never silently drop matchup rows.
+    if len(modeling_df) != len(matchups):
+        raise RuntimeError(
+            "Row count changed during modeling dataframe assembly, which indicates an unexpected drop/duplication."
+        )
 
     return modeling_df[front_cols + other_cols]

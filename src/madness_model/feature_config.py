@@ -1,44 +1,36 @@
-"""Centralized feature definitions and model feature-set selection."""
+"""Centralized feature definitions for matchup model training."""
 
 from __future__ import annotations
 
 import warnings
-from typing import Dict, List
 
-# Canonical binary supervised label column (1 = Team A wins, 0 = Team B wins).
-TARGET_COLUMN = "target"
+import pandas as pd
 
-TEAM_ID_COLUMNS: List[str] = ["teamA_id", "teamB_id"]
-METADATA_COLUMNS: List[str] = ["season", "round", "region", *TEAM_ID_COLUMNS]
+TARGET_COL = "target"
+TARGET_COLUMN = TARGET_COL  # Backward-compat alias.
 
-# Base (un-prefixed) team-season columns expected from team feature sources.
-RAW_TEAM_FEATURE_COLUMNS: List[str] = [
-    "seed",
-    "wins",
-    "losses",
-    "win_pct",
-    "points_per_game",
-    "points_allowed_per_game",
-    "average_margin",
-    "fg_pct",
-    "three_pct",
-    "ft_pct",
-    "rebounds_per_game",
-    "assists_per_game",
-    "turnovers_per_game",
-    "steals_per_game",
-    "blocks_per_game",
-    "offensive_efficiency",
-    "defensive_efficiency",
-    "net_efficiency",
-    "sos",
-    "last10_win_pct",
-    "neutral_win_pct",
-    "elo_pre_tourney",
-    "conference",
+METADATA_COLS = [
+    "season",
+    "round",
+    "teamA_id",
+    "teamB_id",
+    TARGET_COL,
 ]
 
-DIFF_FEATURE_COLUMNS: List[str] = [
+SEED_ONLY_FEATURES = ["seed_diff"]
+
+LOGISTIC_FEATURES = [
+    "seed_diff",
+    "win_pct_diff",
+    "margin_diff",
+    "ppg_diff",
+    "opp_ppg_diff",
+    "off_eff_diff",
+    "def_eff_diff",
+    "elo_diff",
+]
+
+DIFF_FEATURES = [
     "seed_diff",
     "win_pct_diff",
     "ppg_diff",
@@ -59,115 +51,98 @@ DIFF_FEATURE_COLUMNS: List[str] = [
     "last10_diff",
     "neutral_win_pct_diff",
     "elo_diff",
-    "win_pct_ratio",
-    "off_eff_ratio",
-    "net_eff_ratio",
-    "elo_ratio",
 ]
 
-CONTEXT_FEATURE_COLUMNS: List[str] = [
+CONTEXT_FEATURES = [
     "same_conference_flag",
     "round",
-    "region",
     "seed_bucket",
     "upset_bucket",
+    "region",
 ]
 
-SEED_ONLY_FEATURES: List[str] = ["seed_diff"]
-
-LOGISTIC_BASELINE_FEATURES: List[str] = [
-    "seed_diff",
-    "win_pct_diff",
-    "margin_diff",
-    "ppg_diff",
-    "opp_ppg_diff",
-    "off_eff_diff",
-    "def_eff_diff",
-    "elo_diff",
-]
-
-TREE_MODEL_FEATURES: List[str] = [
-    *DIFF_FEATURE_COLUMNS,
-    *CONTEXT_FEATURE_COLUMNS,
+TREE_RAW_FEATURES = [
     "teamA_seed",
     "teamB_seed",
     "teamA_win_pct",
     "teamB_win_pct",
-    "teamA_offensive_efficiency",
-    "teamB_offensive_efficiency",
-    "teamA_defensive_efficiency",
-    "teamB_defensive_efficiency",
-    "teamA_net_efficiency",
-    "teamB_net_efficiency",
-    "teamA_elo_pre_tourney",
-    "teamB_elo_pre_tourney",
-]
-
-EXPANDED_MODEL_FEATURES: List[str] = [
-    *TREE_MODEL_FEATURES,
     "teamA_points_per_game",
     "teamB_points_per_game",
     "teamA_points_allowed_per_game",
     "teamB_points_allowed_per_game",
     "teamA_average_margin",
     "teamB_average_margin",
+    "teamA_offensive_efficiency",
+    "teamB_offensive_efficiency",
+    "teamA_defensive_efficiency",
+    "teamB_defensive_efficiency",
+    "teamA_net_efficiency",
+    "teamB_net_efficiency",
     "teamA_sos",
     "teamB_sos",
     "teamA_last10_win_pct",
     "teamB_last10_win_pct",
+    "teamA_neutral_win_pct",
+    "teamB_neutral_win_pct",
+    "teamA_elo_pre_tourney",
+    "teamB_elo_pre_tourney",
 ]
 
-MODEL_FEATURE_SETS: Dict[str, List[str]] = {
+TREE_FEATURES = [*DIFF_FEATURES, *TREE_RAW_FEATURES, *CONTEXT_FEATURES]
+NEURAL_NET_FEATURES = TREE_FEATURES.copy()
+
+MODEL_FEATURES: dict[str, list[str]] = {
+    "logistic_regression": LOGISTIC_FEATURES,
+    "random_forest": TREE_FEATURES,
+    "xgboost": TREE_FEATURES,
+    "neural_net": NEURAL_NET_FEATURES,
+    # Backward-compat aliases for prior code/tests.
     "seed_only_logistic": SEED_ONLY_FEATURES,
-    "logistic_baseline": LOGISTIC_BASELINE_FEATURES,
-    "random_forest": TREE_MODEL_FEATURES,
-    "xgboost": EXPANDED_MODEL_FEATURES,
+    "logistic_baseline": LOGISTIC_FEATURES,
 }
 
 
-def resolve_feature_columns(
-    available_columns: List[str],
-    desired_columns: List[str],
-    *,
-    strict: bool = False,
-    feature_set_name: str | None = None,
-) -> List[str]:
-    """Resolve the final usable feature columns from a desired feature set."""
-    available = set(available_columns)
-    resolved = [col for col in desired_columns if col in available]
-    missing = [col for col in desired_columns if col not in available]
+def validate_feature_columns_exist(
+    df: pd.DataFrame,
+    feature_cols: list[str],
+    strict: bool = True,
+) -> list[str]:
+    """Validate feature columns exist in a dataframe.
 
+    Returns the usable feature list. If strict=False, missing features are warned
+    and dropped; if strict=True, missing features raise a ``KeyError``.
+    """
+
+    missing = [column for column in feature_cols if column not in df.columns]
     if missing:
-        prefix = f"Feature set '{feature_set_name}'" if feature_set_name else "Feature set"
-        message = f"{prefix} is missing {len(missing)} features: {missing}"
+        message = f"Missing feature columns: {missing}"
         if strict:
             raise KeyError(message)
-        warnings.warn(f"{message}. Dropping missing features.", stacklevel=2)
+        warnings.warn(f"{message}. Dropping missing optional features.", stacklevel=2)
 
-    if not resolved:
+    usable = [column for column in feature_cols if column in df.columns]
+    if not usable:
+        raise ValueError("No usable feature columns found for model input.")
+    return usable
+
+
+def get_feature_columns(df: pd.DataFrame, model_name: str, strict: bool = True) -> list[str]:
+    """Get validated feature columns for a model name."""
+
+    if model_name not in MODEL_FEATURES:
         raise ValueError(
-            f"No usable features resolved for set '{feature_set_name or 'unknown'}'."
+            f"Unsupported model_name='{model_name}'. Supported: {sorted(MODEL_FEATURES)}"
         )
+    return validate_feature_columns_exist(df, MODEL_FEATURES[model_name], strict=strict)
 
-    return resolved
 
-
+# Backward-compat alias used by older modules.
 def get_model_feature_columns(
-    modeling_df_columns: List[str],
+    modeling_df_columns: list[str],
     model_name: str,
     *,
-    strict: bool = False,
-) -> List[str]:
-    """Return the resolved feature list for a model name."""
-    if model_name not in MODEL_FEATURE_SETS:
-        raise ValueError(
-            f"Unsupported model_name='{model_name}'. "
-            f"Supported: {sorted(MODEL_FEATURE_SETS)}"
-        )
+    strict: bool = True,
+) -> list[str]:
+    """Compatibility wrapper around :func:`get_feature_columns`."""
 
-    return resolve_feature_columns(
-        available_columns=modeling_df_columns,
-        desired_columns=MODEL_FEATURE_SETS[model_name],
-        strict=strict,
-        feature_set_name=model_name,
-    )
+    return get_feature_columns(pd.DataFrame(columns=modeling_df_columns), model_name, strict=strict)

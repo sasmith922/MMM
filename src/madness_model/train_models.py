@@ -2,134 +2,159 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
 
-from madness_model.feature_config import TARGET_COLUMN, get_model_feature_columns
+from madness_model.evaluate_models import compute_metrics
+from madness_model.feature_config import TARGET_COL, get_feature_columns
 from madness_model.model_utils import (
+    build_model,
     build_train_test_matrices,
-    calculate_classification_metrics,
-    get_train_test_split,
+    model_supports_predict_proba,
+    save_model,
 )
+from madness_model.paths import MODELS_DIR
 
 
-def _build_model(model_name: str, random_state: int = 42) -> Any:
-    if model_name in {"seed_only_logistic", "logistic_baseline"}:
-        return LogisticRegression(max_iter=2000, random_state=random_state)
-    if model_name == "random_forest":
-        # Conservative baseline defaults (not hyperparameter-tuned yet).
-        return RandomForestClassifier(
-            n_estimators=400,
-            min_samples_leaf=2,
-            random_state=random_state,
-            n_jobs=-1,
-        )
-    if model_name == "xgboost":
-        try:
-            from xgboost import XGBClassifier
-        except ImportError as exc:  # pragma: no cover
-            raise ImportError("xgboost is required for model_name='xgboost'.") from exc
+def get_train_test_split(
+    modeling_df: pd.DataFrame,
+    test_season: int,
+    feature_cols: list[str],
+    target_col: str = TARGET_COL,
+) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, pd.DataFrame, pd.DataFrame]:
+    """Split data with strict season holdout: train ``< Y`` and test ``== Y``."""
 
-        # Starter XGBoost defaults; hyperparameter tuning is intentionally TODO.
-        return XGBClassifier(
-            n_estimators=500,
-            max_depth=5,
-            learning_rate=0.05,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            objective="binary:logistic",
-            eval_metric="logloss",
-            random_state=random_state,
-        )
+    required = ["season", target_col, *feature_cols]
+    missing = [column for column in required if column not in modeling_df.columns]
+    if missing:
+        raise KeyError(f"modeling_df missing required split columns: {missing}")
 
-    raise ValueError(
-        f"Unsupported model_name='{model_name}'. "
-        "Supported: seed_only_logistic, logistic_baseline, random_forest, xgboost"
-    )
+    train_df = modeling_df[modeling_df["season"] < test_season].copy()
+    test_df = modeling_df[modeling_df["season"] == test_season].copy()
+
+    if train_df.empty:
+        raise ValueError(f"No training rows found for test_season={test_season}.")
+    if test_df.empty:
+        raise ValueError(f"No test rows found for test_season={test_season}.")
+
+    X_train = train_df[feature_cols].copy()
+    y_train = train_df[target_col].astype(int).copy()
+    X_test = test_df[feature_cols].copy()
+    y_test = test_df[target_col].astype(int).copy()
+
+    return X_train, y_train, X_test, y_test, train_df, test_df
 
 
-def train_single_model(
+def get_available_test_seasons(
+    modeling_df: pd.DataFrame,
+    min_train_seasons: int = 5,
+) -> list[int]:
+    """Return seasons that have enough prior unique seasons for training."""
+
+    if "season" not in modeling_df.columns:
+        raise KeyError("modeling_df must include a 'season' column.")
+
+    seasons = sorted(modeling_df["season"].dropna().astype(int).unique().tolist())
+    available: list[int] = []
+
+    for season in seasons:
+        prior_seasons = [prior for prior in seasons if prior < season]
+        if len(prior_seasons) >= min_train_seasons:
+            available.append(season)
+
+    return available
+
+
+def _predict_probabilities(model: Any, X_test: pd.DataFrame) -> np.ndarray:
+    if not model_supports_predict_proba(model):
+        raise ValueError(f"Model {type(model).__name__} does not support predict_proba().")
+    return np.asarray(model.predict_proba(X_test)[:, 1], dtype=float)
+
+
+def train_single_model_for_season(
     modeling_df: pd.DataFrame,
     model_name: str,
     test_season: int,
     random_state: int = 42,
-) -> Dict[str, Any]:
-    """Train one model on seasons < test_season and score the held-out season.
+    strict_features: bool = True,
+    save_model_artifact: bool = True,
+) -> dict[str, Any]:
+    """Train one model on seasons before ``test_season`` and evaluate held-out season.
 
-    Parameters
-    ----------
-    modeling_df:
-        Final matchup-level modeling dataframe built by
-        :func:`madness_model.build_model_dataset.build_modeling_dataframe`.
-    model_name:
-        One of ``seed_only_logistic``, ``logistic_baseline``,
-        ``random_forest``, or ``xgboost``.
-    test_season:
-        Season to hold out for evaluation. Training uses only rows where
-        ``season < test_season``.
-    random_state:
-        Random seed for reproducibility where supported by the model.
-
-    Returns
-    -------
-    dict
-        Dictionary with keys:
-        ``model``, ``feature_cols``, ``model_feature_cols``,
-        ``predictions_df``, and ``metrics``.
+    TODO: Add post-hoc probability calibration per season/model.
     """
-    feature_cols = get_model_feature_columns(
-        modeling_df_columns=modeling_df.columns.tolist(),
-        model_name=model_name,
-        strict=False,
-    )
 
-    split = get_train_test_split(
+    feature_cols = get_feature_columns(modeling_df, model_name, strict=strict_features)
+    _X_train, _y_train, _X_test, _y_test, train_df, test_df = get_train_test_split(
         modeling_df,
         test_season=test_season,
         feature_cols=feature_cols,
-        target_col=TARGET_COLUMN,
+        target_col=TARGET_COL,
     )
-    train_df = split["train_df"]
-    test_df = split["test_df"]
 
     matrices = build_train_test_matrices(
         train_df=train_df,
         test_df=test_df,
         feature_cols=feature_cols,
-        target_col=TARGET_COLUMN,
+        target_col=TARGET_COL,
     )
 
-    model = _build_model(model_name, random_state=random_state)
+    model = build_model(model_name=model_name, random_state=random_state)
     model.fit(matrices["X_train"], matrices["y_train"])
 
-    pred_prob = model.predict_proba(matrices["X_test"])[:, 1]
-    pred_class = (pred_prob >= 0.5).astype(int)
+    y_prob = _predict_probabilities(model, matrices["X_test"])
+    y_pred = (y_prob >= 0.5).astype(int)
 
     metrics = {
-        "test_season": int(test_season),
         "model_name": model_name,
+        "test_season": int(test_season),
         "n_train": int(len(train_df)),
         "n_test": int(len(test_df)),
-        **calculate_classification_metrics(matrices["y_test"], pred_prob),
+        **compute_metrics(matrices["y_test"], y_prob, y_pred),
     }
 
-    prediction_cols = ["season", "teamA_id", "teamB_id", TARGET_COLUMN]
-    if "round" in test_df.columns:
-        prediction_cols.insert(1, "round")
-
+    prediction_cols = [column for column in ["season", "round", "teamA_id", "teamB_id", TARGET_COL] if column in test_df.columns]
     predictions_df = test_df[prediction_cols].copy()
-    predictions_df["pred_prob"] = pred_prob
-    predictions_df["pred_class"] = pred_class
+    predictions_df["pred_prob"] = y_prob
+    predictions_df["pred_class"] = y_pred
     predictions_df["model_name"] = model_name
+    predictions_df["test_season"] = int(test_season)
+
+    if save_model_artifact:
+        artifact_path = Path(MODELS_DIR) / f"{model_name}_{test_season}.joblib"
+        save_model(model, artifact_path)
 
     return {
         "model": model,
         "feature_cols": feature_cols,
-        "model_feature_cols": matrices["model_feature_columns"],
-        "predictions_df": predictions_df,
+        "predictions": predictions_df,
         "metrics": metrics,
+    }
+
+
+# Backward-compat wrapper for previous API.
+def train_single_model(
+    modeling_df: pd.DataFrame,
+    model_name: str,
+    test_season: int,
+    random_state: int = 42,
+) -> dict[str, Any]:
+    """Compatibility wrapper around ``train_single_model_for_season``."""
+
+    result = train_single_model_for_season(
+        modeling_df=modeling_df,
+        model_name=model_name,
+        test_season=test_season,
+        random_state=random_state,
+        strict_features=False,
+        save_model_artifact=False,
+    )
+    return {
+        "model": result["model"],
+        "feature_cols": result["feature_cols"],
+        "predictions_df": result["predictions"],
+        "metrics": result["metrics"],
     }
