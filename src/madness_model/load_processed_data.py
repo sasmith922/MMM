@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Mapping
 
 import pandas as pd
 
 from madness_model.paths import PROCESSED_DATA_DIR
+
+LOGGER = logging.getLogger(__name__)
 
 
 DEFAULT_PROCESSED_FILES: Mapping[str, str] = {
@@ -64,7 +67,7 @@ def _load_dataset(
         required_columns=REQUIRED_COLUMNS[dataset_name],
     )
 
-    print(f"Loaded {dataset_name}: {len(df):,} rows from {file_path}")
+    LOGGER.info("Loaded %s: %s rows from %s", dataset_name, f"{len(df):,}", file_path)
     return df
 
 

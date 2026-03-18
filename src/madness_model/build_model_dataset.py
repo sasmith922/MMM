@@ -62,14 +62,19 @@ def _coerce_team_profiles(team_profiles_df: pd.DataFrame) -> pd.DataFrame:
     return team_profiles
 
 
-def _validate_unique_team_profiles(team_profiles: pd.DataFrame) -> None:
+def _validate_unique_team_profiles(team_profiles: pd.DataFrame, *, strict: bool) -> None:
     duplicated = team_profiles.duplicated(subset=["season", "team_id"], keep=False)
-    if duplicated.any():
-        sample = team_profiles.loc[duplicated, ["season", "team_id"]].head(10).to_dict("records")
-        raise ValueError(
-            "team_profiles_df must be unique on (season, team_id). "
-            f"Found duplicates like: {sample}"
-        )
+    if not duplicated.any():
+        return
+
+    sample = team_profiles.loc[duplicated, ["season", "team_id"]].head(10).to_dict("records")
+    message = (
+        "team_profiles_df must be unique on (season, team_id). "
+        f"Found duplicates like: {sample}"
+    )
+    if strict:
+        raise ValueError(message)
+    warnings.warn(message, stacklevel=2)
 
 
 def _validate_matchup_joins(
@@ -78,26 +83,33 @@ def _validate_matchup_joins(
     *,
     strict: bool,
 ) -> None:
-    keys = set(zip(team_profiles["season"], team_profiles["team_id"]))
+    profile_keys = team_profiles[["season", "team_id"]].drop_duplicates()
 
-    missing_teamA = [
-        (int(row.season), int(row.teamA_id))
-        for row in matchups[["season", "teamA_id"]].itertuples(index=False)
-        if (int(row.season), int(row.teamA_id)) not in keys
-    ]
-    missing_teamB = [
-        (int(row.season), int(row.teamB_id))
-        for row in matchups[["season", "teamB_id"]].itertuples(index=False)
-        if (int(row.season), int(row.teamB_id)) not in keys
-    ]
+    missing_teamA_df = (
+        matchups[["season", "teamA_id"]]
+        .rename(columns={"teamA_id": "team_id"})
+        .merge(profile_keys, on=["season", "team_id"], how="left", indicator=True)
+        .loc[lambda df: df["_merge"] == "left_only", ["season", "team_id"]]
+        .drop_duplicates()
+    )
+    missing_teamB_df = (
+        matchups[["season", "teamB_id"]]
+        .rename(columns={"teamB_id": "team_id"})
+        .merge(profile_keys, on=["season", "team_id"], how="left", indicator=True)
+        .loc[lambda df: df["_merge"] == "left_only", ["season", "team_id"]]
+        .drop_duplicates()
+    )
+
+    missing_teamA = list(missing_teamA_df.head(5).itertuples(index=False, name=None))
+    missing_teamB = list(missing_teamB_df.head(5).itertuples(index=False, name=None))
 
     if not missing_teamA and not missing_teamB:
         return
 
     message = (
         "Tournament matchup rows are missing team profile joins. "
-        f"Missing teamA keys sample: {missing_teamA[:5]} | "
-        f"Missing teamB keys sample: {missing_teamB[:5]}"
+        f"Missing teamA keys sample: {missing_teamA} | "
+        f"Missing teamB keys sample: {missing_teamB}"
     )
     if strict:
         raise ValueError(message)
@@ -237,7 +249,7 @@ def build_modeling_dataframe(
     """
 
     team_profiles = _coerce_team_profiles(team_profiles_df)
-    _validate_unique_team_profiles(team_profiles)
+    _validate_unique_team_profiles(team_profiles, strict=strict)
 
     matchups = tourney_matchups_df.copy()
     _require_columns(matchups, REQUIRED_MATCHUP_COLUMNS, "tourney_matchups_df")
