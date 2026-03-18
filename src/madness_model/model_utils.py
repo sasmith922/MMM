@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, brier_score_loss, log_loss, roc_auc_score
 
+PROB_EPSILON = 1e-6
+
 
 def _encode_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
     """Encode feature frame with deterministic numeric output."""
@@ -111,7 +113,7 @@ def calculate_classification_metrics(
     y_prob: np.ndarray,
 ) -> dict:
     """Compute standard binary classification metrics with safe fallbacks."""
-    y_prob = np.clip(y_prob, 1e-6, 1 - 1e-6)
+    y_prob = np.clip(y_prob, PROB_EPSILON, 1 - PROB_EPSILON)
     y_pred = (y_prob >= 0.5).astype(int)
 
     metrics = {

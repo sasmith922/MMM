@@ -5,6 +5,7 @@ from __future__ import annotations
 import warnings
 from typing import Dict, List
 
+# Canonical binary supervised label column (1 = Team A wins, 0 = Team B wins).
 TARGET_COLUMN = "target"
 
 TEAM_ID_COLUMNS: List[str] = ["teamA_id", "teamB_id"]

@@ -21,6 +21,7 @@ def _build_model(model_name: str, random_state: int = 42) -> Any:
     if model_name in {"seed_only_logistic", "logistic_baseline"}:
         return LogisticRegression(max_iter=2000, random_state=random_state)
     if model_name == "random_forest":
+        # Conservative baseline defaults (not hyperparameter-tuned yet).
         return RandomForestClassifier(
             n_estimators=400,
             min_samples_leaf=2,
@@ -33,6 +34,7 @@ def _build_model(model_name: str, random_state: int = 42) -> Any:
         except ImportError as exc:  # pragma: no cover
             raise ImportError("xgboost is required for model_name='xgboost'.") from exc
 
+        # Starter XGBoost defaults; hyperparameter tuning is intentionally TODO.
         return XGBClassifier(
             n_estimators=500,
             max_depth=5,
@@ -56,7 +58,29 @@ def train_single_model(
     test_season: int,
     random_state: int = 42,
 ) -> Dict[str, Any]:
-    """Train a single model using all seasons prior to test_season and score test season."""
+    """Train one model on seasons < test_season and score the held-out season.
+
+    Parameters
+    ----------
+    modeling_df:
+        Final matchup-level modeling dataframe built by
+        :func:`madness_model.build_model_dataset.build_modeling_dataframe`.
+    model_name:
+        One of ``seed_only_logistic``, ``logistic_baseline``,
+        ``random_forest``, or ``xgboost``.
+    test_season:
+        Season to hold out for evaluation. Training uses only rows where
+        ``season < test_season``.
+    random_state:
+        Random seed for reproducibility where supported by the model.
+
+    Returns
+    -------
+    dict
+        Dictionary with keys:
+        ``model``, ``feature_cols``, ``model_feature_cols``,
+        ``predictions_df``, and ``metrics``.
+    """
     feature_cols = get_model_feature_columns(
         modeling_df_columns=modeling_df.columns.tolist(),
         model_name=model_name,

@@ -38,6 +38,10 @@ DIFF_COLUMN_MAPPING: Dict[str, str] = {
     "elo_diff": "elo_pre_tourney",
 }
 
+BOX_FEATURE_PREFIX = "box_"
+SEED_BUCKET_BINS = [-np.inf, 2, 5, np.inf]
+SEED_BUCKET_LABELS = [0, 1, 2]  # 0=close seed matchup, 1=moderate gap, 2=large gap
+
 
 def _require_columns(df: pd.DataFrame, required_cols: list[str], table_name: str) -> None:
     missing = [c for c in required_cols if c not in df.columns]
@@ -129,7 +133,9 @@ def _derive_games_boxscore_features(
     agg_df = (
         games.groupby(["season", "team_id"], as_index=False)[supplemental_numeric_cols]
         .mean(numeric_only=True)
-        .rename(columns={c: f"box_{c}" for c in supplemental_numeric_cols})
+        # Prefix supplemental aggregate features to distinguish them from
+        # team_profiles columns that are already season-level summaries.
+        .rename(columns={c: f"{BOX_FEATURE_PREFIX}{c}" for c in supplemental_numeric_cols})
     )
 
     return agg_df
@@ -238,8 +244,8 @@ def _build_context_features(modeling_df: pd.DataFrame) -> pd.DataFrame:
         abs_seed_diff = modeling_df["seed_diff"].abs()
         modeling_df["seed_bucket"] = pd.cut(
             abs_seed_diff,
-            bins=[-np.inf, 2, 5, np.inf],
-            labels=[0, 1, 2],
+            bins=SEED_BUCKET_BINS,
+            labels=SEED_BUCKET_LABELS,
         ).astype(float)
 
     if "teamA_seed" in modeling_df.columns and "teamB_seed" in modeling_df.columns:
@@ -257,6 +263,30 @@ def build_modeling_dataframe(
     use_context_features: bool = True,
 ) -> pd.DataFrame:
     """Build the final matchup-level modeling dataframe.
+
+    Parameters
+    ----------
+    team_profiles_df:
+        Team-season feature table with one row per ``(season, team_id)``.
+    tourney_matchups_df:
+        Supervised tournament matchup base table containing at least
+        ``season``, ``teamA_id``, ``teamB_id`` and optionally ``target`` and
+        matchup metadata columns.
+    games_boxscores_df:
+        Optional processed games/boxscores source used to derive supplemental
+        season-level team features not already in ``team_profiles_df``.
+    use_raw_team_features:
+        Whether to retain prefixed ``teamA_`` and ``teamB_`` raw columns.
+    use_diff_features:
+        Whether to create engineered difference/ratio matchup features.
+    use_context_features:
+        Whether to create context features (conference, seed buckets, etc.).
+
+    Returns
+    -------
+    pd.DataFrame
+        Matchup-level modeling dataframe ready for season-based train/test
+        splitting and model training.
 
     Leakage note
     ------------

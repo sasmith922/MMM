@@ -28,7 +28,34 @@ def run_backtest(
     random_state: int = 42,
     save_outputs: bool = True,
 ) -> Dict[str, Any]:
-    """Run rolling season backtests across one or more model types."""
+    """Run rolling season backtests across one or more model types.
+
+    Parameters
+    ----------
+    modeling_df:
+        Matchup-level modeling dataframe with a ``season`` column.
+    model_names:
+        List of model names to evaluate per season.
+    test_seasons:
+        Explicit seasons to evaluate. If None, valid seasons are inferred based
+        on ``min_train_seasons``.
+    min_train_seasons:
+        Minimum number of unique historical seasons required before a season is
+        eligible as a test season when inferring ``test_seasons``.
+    random_state:
+        Random seed passed into each model training call.
+    save_outputs:
+        Whether to persist CSV outputs under ``outputs/reports`` and
+        ``outputs/predictions``.
+
+    Returns
+    -------
+    dict
+        Dictionary with keys:
+        ``metrics_by_season`` (per-model, per-season metrics),
+        ``model_summary`` (aggregated averages by model),
+        and ``predictions`` (row-level held-out predictions).
+    """
     if "season" not in modeling_df.columns:
         raise KeyError("modeling_df must include 'season'.")
 

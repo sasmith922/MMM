@@ -17,7 +17,27 @@ def predict_matchups(
     model_feature_cols: List[str],
     model_name: str,
 ) -> pd.DataFrame:
-    """Predict matchup win probabilities for Team A using a fitted model."""
+    """Predict matchup win probabilities for Team A using a fitted model.
+
+    Parameters
+    ----------
+    model:
+        Fitted classifier exposing ``predict_proba``.
+    matchup_df:
+        Matchup dataframe to score.
+    feature_cols:
+        Original feature column list used before encoding.
+    model_feature_cols:
+        Final encoded feature schema learned during training.
+    model_name:
+        Name label to attach to the prediction output.
+
+    Returns
+    -------
+    pd.DataFrame
+        Prediction dataframe containing matchup metadata plus
+        ``pred_prob``, ``pred_class``, and ``model_name``.
+    """
     X_infer = build_inference_matrix(
         inference_df=matchup_df,
         feature_cols=feature_cols,
