@@ -16,7 +16,9 @@ build_model_dataset Assemble final matchup-level modeling dataframe.
 feature_config   Central model feature lists and feature sets.
 model_utils      Season split and metric utilities for model pipelines.
 train_models     Multi-model training for rolling-season evaluation.
-backtest_models  Rolling backtest runner across multiple models.
+backtest_runner  Rolling backtest runner across multiple models.
+backtest_models  Backward-compatible alias for backtest_runner.
+evaluate_models  Metrics helpers for season-heldout backtests.
 predict_matchups Score matchup rows with trained models.
 elo              Elo rating system for NCAA teams.
 baseline_model   Logistic regression baseline model.
@@ -47,7 +49,9 @@ __all__ = [
     "feature_config",
     "model_utils",
     "train_models",
+    "backtest_runner",
     "backtest_models",
+    "evaluate_models",
     "predict_matchups",
     "elo",
     "baseline_model",

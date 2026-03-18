@@ -1,18 +1,24 @@
-"""Tests for central modeling dataframe assembly and rolling model training."""
+"""Tests for matchup-model dataset assembly and season-heldout training pipeline."""
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
-from madness_model.backtest_models import run_backtest
+from madness_model.backtest_runner import run_backtest
 from madness_model.build_model_dataset import build_modeling_dataframe
-from madness_model.model_utils import get_train_test_split
-from madness_model.train_models import train_single_model
+from madness_model.evaluate_models import compute_metrics
+from madness_model.feature_config import get_feature_columns
+from madness_model.train_models import (
+    get_available_test_seasons,
+    get_train_test_split,
+    train_single_model_for_season,
+)
 
 
 def _sample_team_profiles() -> pd.DataFrame:
     rows = []
-    for season in [2018, 2019, 2020, 2021, 2022]:
+    for season in [2017, 2018, 2019, 2020, 2021, 2022, 2023]:
         rows.extend(
             [
                 {
@@ -97,7 +103,7 @@ def _sample_team_profiles() -> pd.DataFrame:
 
 def _sample_matchups() -> pd.DataFrame:
     rows = []
-    for season in [2018, 2019, 2020, 2021, 2022]:
+    for season in [2017, 2018, 2019, 2020, 2021, 2022, 2023]:
         rows.extend(
             [
                 {
@@ -131,7 +137,7 @@ def _sample_matchups() -> pd.DataFrame:
 
 def _sample_games_boxscores() -> pd.DataFrame:
     rows = []
-    for season in [2018, 2019, 2020, 2021, 2022]:
+    for season in [2017, 2018, 2019, 2020, 2021, 2022, 2023]:
         rows.extend(
             [
                 {"season": season, "team_id": 1, "pace": 70.0, "is_tourney": False},
@@ -143,12 +149,16 @@ def _sample_games_boxscores() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def test_build_modeling_dataframe_assembles_sources_and_engineers_features() -> None:
-    model_df = build_modeling_dataframe(
+def _build_sample_model_df() -> pd.DataFrame:
+    return build_modeling_dataframe(
         team_profiles_df=_sample_team_profiles(),
         tourney_matchups_df=_sample_matchups(),
         games_boxscores_df=_sample_games_boxscores(),
     )
+
+
+def test_build_modeling_dataframe_assembles_sources_and_engineers_features() -> None:
+    model_df = _build_sample_model_df()
 
     assert "teamA_win_pct" in model_df.columns
     assert "teamB_win_pct" in model_df.columns
@@ -165,25 +175,32 @@ def test_build_modeling_dataframe_assembles_sources_and_engineers_features() -> 
     assert first["same_conference_flag"] == 1
 
 
-def test_season_split_and_train_single_model_use_rolling_logic() -> None:
-    model_df = build_modeling_dataframe(
-        team_profiles_df=_sample_team_profiles(),
-        tourney_matchups_df=_sample_matchups(),
-        games_boxscores_df=_sample_games_boxscores(),
+def test_get_train_test_split_uses_season_heldout_logic() -> None:
+    model_df = _build_sample_model_df()
+    feature_cols = get_feature_columns(model_df, "logistic_regression", strict=True)
+
+    _, _, _, _, train_df, test_df = get_train_test_split(
+        model_df,
+        test_season=2023,
+        feature_cols=feature_cols,
     )
 
-    split = get_train_test_split(model_df, test_season=2022, feature_cols=["seed_diff"])
-    assert split["train_df"]["season"].max() == 2021
-    assert set(split["test_df"]["season"].unique()) == {2022}
+    assert train_df["season"].max() == 2022
+    assert set(test_df["season"].unique()) == {2023}
 
-    result = train_single_model(
+
+def test_train_single_model_for_season_returns_predictions_and_metrics() -> None:
+    model_df = _build_sample_model_df()
+
+    result = train_single_model_for_season(
         modeling_df=model_df,
-        model_name="seed_only_logistic",
-        test_season=2022,
+        model_name="logistic_regression",
+        test_season=2023,
         random_state=42,
+        save_model_artifact=False,
     )
 
-    assert set(result["predictions_df"].columns) >= {
+    assert set(result["predictions"].columns) >= {
         "season",
         "round",
         "teamA_id",
@@ -192,33 +209,51 @@ def test_season_split_and_train_single_model_use_rolling_logic() -> None:
         "pred_prob",
         "pred_class",
         "model_name",
+        "test_season",
     }
-    assert result["metrics"]["test_season"] == 2022
-    assert result["metrics"]["n_train"] == len(model_df[model_df["season"] < 2022])
+    assert result["metrics"]["test_season"] == 2023
+    assert result["metrics"]["n_train"] == len(model_df[model_df["season"] < 2023])
 
 
-def test_run_backtest_collects_metrics_and_predictions_without_saving() -> None:
-    model_df = build_modeling_dataframe(
-        team_profiles_df=_sample_team_profiles(),
-        tourney_matchups_df=_sample_matchups(),
-        games_boxscores_df=_sample_games_boxscores(),
-    )
+def test_get_available_test_seasons_respects_min_train_seasons() -> None:
+    model_df = _build_sample_model_df()
+    assert get_available_test_seasons(model_df, min_train_seasons=5) == [2022, 2023]
+
+
+def test_run_backtest_collects_metrics_predictions_and_summary() -> None:
+    model_df = _build_sample_model_df()
 
     results = run_backtest(
         modeling_df=model_df,
-        model_names=["seed_only_logistic", "random_forest"],
-        test_seasons=[2021, 2022],
+        model_names=["logistic_regression", "random_forest"],
+        test_seasons=[2022, 2023],
         min_train_seasons=2,
         random_state=42,
         save_outputs=False,
     )
 
-    metrics_df = results["metrics_by_season"]
+    metrics_df = results["metrics"]
     preds_df = results["predictions"]
+    summary_df = results["summary"]
 
     assert len(metrics_df) == 4  # 2 models x 2 seasons
     assert sorted(metrics_df["model_name"].unique().tolist()) == [
+        "logistic_regression",
         "random_forest",
-        "seed_only_logistic",
     ]
-    assert set(preds_df["season"].unique()) == {2021, 2022}
+    assert set(preds_df["season"].unique()) == {2022, 2023}
+    assert set(summary_df["model_name"].unique()) == {
+        "logistic_regression",
+        "random_forest",
+    }
+
+
+def test_compute_metrics_handles_single_class_roc_auc_edge_case() -> None:
+    metrics = compute_metrics(
+        y_true=np.array([1, 1, 1]),
+        y_prob=np.array([0.8, 0.7, 0.9]),
+        y_pred=np.array([1, 1, 1]),
+    )
+
+    assert np.isnan(metrics["roc_auc"])
+    assert metrics["n_samples"] == 3

@@ -3,78 +3,98 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict
+from typing import Mapping
 
 import pandas as pd
 
 from madness_model.paths import PROCESSED_DATA_DIR
 
 
-DEFAULT_PROCESSED_FILES = {
+DEFAULT_PROCESSED_FILES: Mapping[str, str] = {
     "team_profiles": "team_profiles.csv",
     "games_boxscores": "games_boxscores.csv",
     "tourney_matchups": "tourney_matchups.csv",
 }
 
+REQUIRED_COLUMNS: Mapping[str, tuple[str, ...]] = {
+    "team_profiles": ("season", "team_id"),
+    "games_boxscores": ("season",),
+    "tourney_matchups": ("season", "teamA_id", "teamB_id", "target"),
+}
 
-def _load_processed_csv(
-    file_name: str,
+
+def _resolve_path(path: str | Path | None, default_file_name: str) -> Path:
+    """Resolve an explicit file path or the default processed-data file path."""
+    if path is None:
+        return (PROCESSED_DATA_DIR / default_file_name).resolve()
+    return Path(path).resolve()
+
+
+def _validate_required_columns(
+    df: pd.DataFrame,
     *,
-    processed_dir: Path = PROCESSED_DATA_DIR,
-    required: bool = True,
-) -> pd.DataFrame | None:
-    """Load a processed CSV by file name from the processed data directory."""
-    path = processed_dir / file_name
-    if not path.exists():
-        if required:
-            raise FileNotFoundError(f"Required processed CSV not found: {path}")
-        return None
-    return pd.read_csv(path)
+    dataset_name: str,
+    required_columns: tuple[str, ...],
+) -> None:
+    missing = [column for column in required_columns if column not in df.columns]
+    if missing:
+        raise KeyError(
+            f"{dataset_name} is missing required columns {missing}. "
+            f"Available columns: {df.columns.tolist()}"
+        )
 
 
-def load_team_profiles(*, required: bool = True) -> pd.DataFrame | None:
-    """Load the team season profile table."""
-    return _load_processed_csv(DEFAULT_PROCESSED_FILES["team_profiles"], required=required)
-
-
-def load_games_boxscores(*, required: bool = False) -> pd.DataFrame | None:
-    """Load the processed games/boxscore table used for feature enrichment."""
-    return _load_processed_csv(DEFAULT_PROCESSED_FILES["games_boxscores"], required=required)
-
-
-def load_tourney_matchups(*, required: bool = True) -> pd.DataFrame | None:
-    """Load the supervised historical tournament matchup table."""
-    return _load_processed_csv(DEFAULT_PROCESSED_FILES["tourney_matchups"], required=required)
-
-
-def load_all_processed_data(
+def _load_dataset(
+    dataset_name: str,
+    default_file_name: str,
     *,
-    include_additional_csvs: bool = True,
-) -> Dict[str, pd.DataFrame | Dict[str, pd.DataFrame] | None]:
-    """Load all primary processed feature sources.
+    path: str | Path | None = None,
+) -> pd.DataFrame:
+    """Load and validate one processed dataset CSV."""
+    file_path = _resolve_path(path, default_file_name)
+    if not file_path.exists():
+        raise FileNotFoundError(
+            f"Required processed dataset '{dataset_name}' not found: {file_path}"
+        )
 
-    Returns a dict with required modular sources:
-    - ``team_profiles``
-    - ``games_boxscores``
-    - ``tourney_matchups``
+    df = pd.read_csv(file_path)
+    _validate_required_columns(
+        df,
+        dataset_name=dataset_name,
+        required_columns=REQUIRED_COLUMNS[dataset_name],
+    )
 
-    If ``include_additional_csvs`` is True, also returns ``additional_sources``
-    containing any extra processed CSVs keyed by stem for future extensibility.
-    """
-    data: Dict[str, pd.DataFrame | Dict[str, pd.DataFrame] | None] = {
-        "team_profiles": load_team_profiles(required=True),
-        "games_boxscores": load_games_boxscores(required=False),
-        "tourney_matchups": load_tourney_matchups(required=True),
+    print(f"Loaded {dataset_name}: {len(df):,} rows from {file_path}")
+    return df
+
+
+def load_team_profiles(path: str | Path | None = None) -> pd.DataFrame:
+    """Load ``team_profiles.csv`` with required schema validation."""
+    return _load_dataset("team_profiles", DEFAULT_PROCESSED_FILES["team_profiles"], path=path)
+
+
+def load_games_boxscores(path: str | Path | None = None) -> pd.DataFrame:
+    """Load ``games_boxscores.csv`` with required schema validation."""
+    return _load_dataset(
+        "games_boxscores",
+        DEFAULT_PROCESSED_FILES["games_boxscores"],
+        path=path,
+    )
+
+
+def load_tourney_matchups(path: str | Path | None = None) -> pd.DataFrame:
+    """Load ``tourney_matchups.csv`` with required schema validation."""
+    return _load_dataset(
+        "tourney_matchups",
+        DEFAULT_PROCESSED_FILES["tourney_matchups"],
+        path=path,
+    )
+
+
+def load_all_processed_data() -> dict[str, pd.DataFrame]:
+    """Load all required processed modeling data sources."""
+    return {
+        "team_profiles": load_team_profiles(),
+        "games_boxscores": load_games_boxscores(),
+        "tourney_matchups": load_tourney_matchups(),
     }
-
-    if include_additional_csvs:
-        known = set(DEFAULT_PROCESSED_FILES.values())
-        additional_sources: Dict[str, pd.DataFrame] = {}
-        if PROCESSED_DATA_DIR.exists():
-            for path in sorted(PROCESSED_DATA_DIR.glob("*.csv")):
-                if path.name in known:
-                    continue
-                additional_sources[path.stem] = pd.read_csv(path)
-        data["additional_sources"] = additional_sources
-
-    return data
