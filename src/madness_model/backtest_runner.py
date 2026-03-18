@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,8 @@ import pandas as pd
 from madness_model.evaluate_models import summarize_metrics
 from madness_model.paths import PREDICTIONS_DIR, REPORTS_DIR
 from madness_model.train_models import get_available_test_seasons, train_single_model_for_season
+
+LOGGER = logging.getLogger(__name__)
 
 
 def run_backtest(
@@ -31,15 +34,25 @@ def run_backtest(
             modeling_df,
             min_train_seasons=min_train_seasons,
         )
+    else:
+        test_seasons = sorted(set(int(season) for season in test_seasons))
 
     if not test_seasons:
         raise ValueError("No valid test seasons available for backtesting.")
+
+    LOGGER.info(
+        "Starting backtest with models=%s over test_seasons=%s (rows=%s).",
+        model_names,
+        test_seasons,
+        len(modeling_df),
+    )
 
     predictions_frames: list[pd.DataFrame] = []
     metrics_rows: list[dict[str, Any]] = []
 
     for season in sorted(test_seasons):
         for model_name in model_names:
+            LOGGER.info("Running model=%s on held-out season=%s", model_name, season)
             result = train_single_model_for_season(
                 modeling_df=modeling_df,
                 model_name=model_name,
@@ -66,6 +79,12 @@ def run_backtest(
         predictions_df.to_csv(predictions_path, index=False)
         metrics_df.to_csv(metrics_path, index=False)
         summary_df.to_csv(summary_path, index=False)
+        LOGGER.info(
+            "Saved backtest outputs: predictions=%s metrics=%s summary=%s",
+            predictions_path,
+            metrics_path,
+            summary_path,
+        )
 
     return {
         "predictions": predictions_df,
