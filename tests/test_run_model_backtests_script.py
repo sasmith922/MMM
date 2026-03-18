@@ -33,7 +33,9 @@ def test_main_prints_readable_summary_and_top_models(monkeypatch, capsys) -> Non
     monkeypatch.setattr(
         module,
         "build_modeling_dataframe",
-        lambda **_: pd.DataFrame({"season": [2022, 2023], "target": [1, 0]}),
+        lambda team_profiles_df, tourney_matchups_df, games_boxscores_df: pd.DataFrame(
+            {"season": [2022, 2023], "target": [1, 0]}
+        ),
     )
     monkeypatch.setattr(module, "get_available_test_seasons", lambda *_args, **_kwargs: [2023])
 

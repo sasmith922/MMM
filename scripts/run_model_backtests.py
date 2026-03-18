@@ -21,7 +21,19 @@ MIN_TRAIN_SEASONS = 5
 RANDOM_STATE = 42
 
 
-def _best_model(summary_df, metric: str, *, ascending: bool) -> tuple[str, float] | None:
+def _get_best_model_by_metric(
+    summary_df,
+    metric: str,
+    *,
+    ascending: bool,
+) -> tuple[str, float] | None:
+    """Return (model_name, metric_value) for the best model on one summary metric.
+
+    Expects ``summary_df`` to include ``model_name`` and the requested ``metric``
+    column. Returns ``None`` when the metric column is unavailable or has only NaN.
+    """
+    if metric not in summary_df.columns:
+        return None
     ranking = summary_df[["model_name", metric]].dropna()
     if ranking.empty:
         return None
@@ -76,10 +88,10 @@ def main() -> None:
     print("\nSummary metrics across seasons:")
     print(summary_df.round(4).to_string(index=False))
 
-    best_log_loss = _best_model(summary_df, "mean_log_loss", ascending=True)
-    best_brier = _best_model(summary_df, "mean_brier_score", ascending=True)
-    best_accuracy = _best_model(summary_df, "mean_accuracy", ascending=False)
-    best_roc_auc = _best_model(summary_df, "mean_roc_auc", ascending=False)
+    best_log_loss = _get_best_model_by_metric(summary_df, "mean_log_loss", ascending=True)
+    best_brier = _get_best_model_by_metric(summary_df, "mean_brier_score", ascending=True)
+    best_accuracy = _get_best_model_by_metric(summary_df, "mean_accuracy", ascending=False)
+    best_roc_auc = _get_best_model_by_metric(summary_df, "mean_roc_auc", ascending=False)
 
     print("\nTop-performing models:")
     if best_log_loss:
