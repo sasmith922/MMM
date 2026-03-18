@@ -4,6 +4,12 @@ from __future__ import annotations
 
 import pandas as pd
 import pytest
+import sys
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+SRC_DIR = ROOT_DIR / "src"
+sys.path.insert(0, str(SRC_DIR))
 
 from madness_model.bracket import ModelBundle
 from tests.fixtures.fake_models import (
