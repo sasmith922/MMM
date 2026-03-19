@@ -84,14 +84,14 @@ def _dedupe_team_profiles(team_profiles: pd.DataFrame) -> pd.DataFrame:
     duplicates_audit.to_csv(audit_path, index=False)
 
     deduped["_non_null_count"] = deduped.notna().sum(axis=1)
-    deduped["_has_seed"] = deduped["seed"].notna().astype(int) if "seed" in deduped.columns else 0
-    deduped["_has_elo_pre_tourney"] = (
-        deduped["elo_pre_tourney"].notna().astype(int) if "elo_pre_tourney" in deduped.columns else 0
-    )
-    deduped["_has_team_name"] = deduped["team_name"].notna().astype(int) if "team_name" in deduped.columns else 0
-    deduped["_has_canonical_team_name"] = (
-        deduped["canonical_team_name"].notna().astype(int) if "canonical_team_name" in deduped.columns else 0
-    )
+    helper_column_mapping = {
+        "_has_seed": "seed",
+        "_has_elo_pre_tourney": "elo_pre_tourney",
+        "_has_team_name": "team_name",
+        "_has_canonical_team_name": "canonical_team_name",
+    }
+    for helper_col, source_col in helper_column_mapping.items():
+        deduped[helper_col] = deduped[source_col].notna().astype(int) if source_col in deduped.columns else 0
 
     sort_columns = [
         "season",
