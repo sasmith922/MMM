@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from madness_model.backtest_runner import run_backtest
-from madness_model.build_model_dataset import build_modeling_dataframe
+from madness_model.build_model_dataset import _coerce_team_profiles, build_modeling_dataframe
 from madness_model.evaluate_models import compute_metrics
 from madness_model.feature_config import get_feature_columns
 from madness_model.train_models import (
@@ -257,3 +257,62 @@ def test_compute_metrics_handles_single_class_roc_auc_edge_case() -> None:
 
     assert np.isnan(metrics["roc_auc"])
     assert metrics["n_samples"] == 3
+
+
+def test_coerce_team_profiles_dedupes_by_preferred_completeness(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    team_profiles = pd.DataFrame(
+        [
+            {
+                "season": 2023,
+                "team_id": 10,
+                "seed": np.nan,
+                "elo_pre_tourney": np.nan,
+                "team_name": "Alpha",
+                "canonical_team_name": np.nan,
+                "win_pct": 0.70,
+            },
+            {
+                "season": 2023,
+                "team_id": 10,
+                "seed": 7,
+                "elo_pre_tourney": np.nan,
+                "team_name": np.nan,
+                "canonical_team_name": np.nan,
+                "win_pct": np.nan,
+            },
+            {
+                "season": 2023,
+                "team_id": 10,
+                "seed": 7,
+                "elo_pre_tourney": 1650,
+                "team_name": "Alpha Wildcats",
+                "canonical_team_name": "alpha-wildcats",
+                "win_pct": 0.71,
+            },
+            {
+                "season": 2023,
+                "team_id": 20,
+                "seed": 12,
+                "elo_pre_tourney": 1500,
+                "team_name": "Beta",
+                "canonical_team_name": "beta",
+                "win_pct": 0.55,
+            },
+        ]
+    )
+
+    deduped = _coerce_team_profiles(team_profiles)
+
+    assert len(deduped) == 2
+    chosen = deduped.loc[(deduped["season"] == 2023) & (deduped["team_id"] == 10)].iloc[0]
+    assert chosen["seed"] == 7
+    assert chosen["elo_pre_tourney"] == 1650
+    assert chosen["team_name"] == "Alpha Wildcats"
+    assert chosen["canonical_team_name"] == "alpha-wildcats"
+
+    audit_path = tmp_path / "outputs" / "reports" / "team_profiles_duplicates_audit.csv"
+    assert audit_path.exists()
+    audit_df = pd.read_csv(audit_path)
+    assert set(audit_df["team_id"]) == {10}
