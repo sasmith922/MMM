@@ -37,6 +37,7 @@ DIFF_COLUMN_MAPPING: dict[str, str] = {
 }
 
 BOX_FEATURE_PREFIX = "box_"
+TEAM_PROFILES_DUPLICATES_AUDIT_PATH = Path("outputs/reports/team_profiles_duplicates_audit.csv")
 
 
 def _require_columns(df: pd.DataFrame, required_cols: list[str], table_name: str) -> None:
@@ -77,9 +78,11 @@ def _dedupe_team_profiles(team_profiles: pd.DataFrame) -> pd.DataFrame:
     print(f"Deduplicating {duplicate_rows} team_profiles rows across repeated (season, team_id) keys")
 
     duplicates_audit = deduped.loc[duplicate_mask].copy()
-    audit_path = Path("outputs/reports/team_profiles_duplicates_audit.csv")
+    audit_path = TEAM_PROFILES_DUPLICATES_AUDIT_PATH
     audit_path.parent.mkdir(parents=True, exist_ok=True)
     duplicates_audit.to_csv(audit_path, index=False)
+
+    deduped["__non_null_count"] = deduped.notna().sum(axis=1)
 
     preference_columns = ["seed", "elo_pre_tourney", "team_name", "canonical_team_name"]
     score_columns: list[str] = []
@@ -89,7 +92,6 @@ def _dedupe_team_profiles(team_profiles: pd.DataFrame) -> pd.DataFrame:
             deduped[score_col] = deduped[column].notna().astype(int)
             score_columns.append(score_col)
 
-    deduped["__non_null_count"] = deduped.notna().sum(axis=1)
     sort_columns = ["season", "team_id", *score_columns, "__non_null_count"]
     ascending = [True, True, *([False] * len(score_columns)), False]
     deduped = deduped.sort_values(sort_columns, ascending=ascending, kind="mergesort")
