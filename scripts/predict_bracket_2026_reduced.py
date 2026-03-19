@@ -125,6 +125,7 @@ def _build_team_lookup(team_features: pd.DataFrame) -> dict[str, TeamRecord]:
 
 
 def _predict_prob_team1_wins(model, feature_cols: list[str], team1: TeamRecord, team2: TeamRecord) -> float:
+    """Predict Team 1 win probability using reduced diffs, filling missing feature values with 0.0."""
     row = {}
     for feature_name in feature_cols:
         a_col, b_col = TEAM_FEATURE_TO_2026_COLUMNS.get(feature_name, (None, None))
@@ -369,7 +370,7 @@ def _build_summary_text(bracket_df: pd.DataFrame) -> str:
         lines.append(f"{ROUND_LABELS.get(round_name, round_name)} winners:")
         for _, row in round_rows.iterrows():
             lines.append(
-                f"- {row['predicted_winner']} over {row['team_1']} vs {row['team_2']} "
+                f"- {row['predicted_winner']} wins matchup: {row['team_1']} vs {row['team_2']} "
                 f"({row['predicted_win_probability']:.3f})"
             )
         lines.append("")

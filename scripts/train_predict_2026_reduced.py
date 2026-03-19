@@ -61,7 +61,7 @@ def _build_2026_prediction_dataset(
     team_features_2026: pd.DataFrame,
     tourney_matchups_2026: pd.DataFrame,
 ) -> pd.DataFrame:
-    def _first_existing(df: pd.DataFrame, candidates: list[str]) -> str | None:
+    def _find_first_existing_column(df: pd.DataFrame, candidates: list[str]) -> str | None:
         for candidate in candidates:
             if candidate in df.columns:
                 return candidate
@@ -89,8 +89,12 @@ def _build_2026_prediction_dataset(
     )
 
     for diff_name, (a_source, b_source) in TEAM_FEATURE_TO_2026_COLUMNS.items():
-        col_a = _first_existing(merged, [f"teamA_{a_source}", f"teamA_{a_source}_x", f"teamA_{a_source}_y"])
-        col_b = _first_existing(merged, [f"teamB_{b_source}", f"teamB_{b_source}_x", f"teamB_{b_source}_y"])
+        col_a = _find_first_existing_column(
+            merged, [f"teamA_{a_source}", f"teamA_{a_source}_x", f"teamA_{a_source}_y"]
+        )
+        col_b = _find_first_existing_column(
+            merged, [f"teamB_{b_source}", f"teamB_{b_source}_x", f"teamB_{b_source}_y"]
+        )
         if col_a and col_b:
             merged[diff_name] = pd.to_numeric(merged[col_a], errors="coerce") - pd.to_numeric(
                 merged[col_b], errors="coerce"

@@ -89,7 +89,7 @@ def ensure_parent(path: Path) -> None:
 
 
 def resolve_first_existing_path(candidates: list[Path], *, purpose: str) -> Path:
-    """Resolve first existing path from candidates, else raise with clear guidance."""
+    """Return first existing candidate path; raise FileNotFoundError when none exist."""
     for candidate in candidates:
         if candidate.exists():
             return candidate

@@ -72,12 +72,14 @@ def _select_overlap_feature_columns(df: pd.DataFrame) -> list[str]:
 
 
 def _safe_roc_auc(y_true: np.ndarray, y_prob: np.ndarray) -> float:
+    """Return ROC-AUC when labels are binary; NaN for single-class test folds."""
     if len(np.unique(y_true)) < 2:
         return float("nan")
     return float(roc_auc_score(y_true, y_prob))
 
 
 def _safe_log_loss(y_true: np.ndarray, y_prob: np.ndarray) -> float:
+    """Return clipped-probability log loss; NaN for single-class test folds."""
     eps = 1e-6
     clipped = np.clip(y_prob, eps, 1.0 - eps)
     if len(np.unique(y_true)) < 2:
