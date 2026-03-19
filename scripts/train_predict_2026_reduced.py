@@ -11,6 +11,7 @@ Usage
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 import sys
 
@@ -25,13 +26,17 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from config.features_2026_reduced import (
+    FEATURE_LIST_2026_REDUCED_PATH,
+    HISTORICAL_MATCHUPS_PROCESSED_PATH,
     HISTORICAL_MATCHUPS_V2_PATH,
+    MIN_OVERLAP_FEATURE_COUNT,
     MODEL_ARTIFACT_2026_PATH,
     PREDICTIONS_2026_PATH,
     TEAM_FEATURES_2026_REDUCED_PATH,
     TOURNEY_MATCHUPS_2026_PATH,
     ensure_parent,
     parse_seed_number,
+    resolve_first_existing_path,
 )
 from madness_model.model_utils import build_model, build_train_test_matrices, save_model
 
@@ -56,6 +61,12 @@ def _build_2026_prediction_dataset(
     team_features_2026: pd.DataFrame,
     tourney_matchups_2026: pd.DataFrame,
 ) -> pd.DataFrame:
+    def _find_first_existing_column(df: pd.DataFrame, candidates: list[str]) -> str | None:
+        for candidate in candidates:
+            if candidate in df.columns:
+                return candidate
+        return None
+
     required_matchup_cols = ["season", "teamA_name_norm", "teamB_name_norm"]
     missing_matchup_cols = [col for col in required_matchup_cols if col not in tourney_matchups_2026.columns]
     if missing_matchup_cols:
@@ -67,19 +78,10 @@ def _build_2026_prediction_dataset(
     feat = team_features_2026.copy()
     if "seed_num" not in feat.columns:
         feat["seed_num"] = feat["seed"].map(parse_seed_number)
-
-    a_cols = {
-        "team_name_norm": "teamA_name_norm",
-        "team_name": "teamA_name",
-        "seed": "teamA_seed",
-        "seed_num": "teamA_seed_num",
-    }
-    b_cols = {
-        "team_name_norm": "teamB_name_norm",
-        "team_name": "teamB_name",
-        "seed": "teamB_seed",
-        "seed_num": "teamB_seed_num",
-    }
+    a_cols = {column: f"teamA_{column}" for column in feat.columns if column != "team_name_norm"}
+    a_cols["team_name_norm"] = "teamA_name_norm"
+    b_cols = {column: f"teamB_{column}" for column in feat.columns if column != "team_name_norm"}
+    b_cols["team_name_norm"] = "teamB_name_norm"
     merged = (
         tourney_matchups_2026.copy()
         .merge(feat.rename(columns=a_cols), on="teamA_name_norm", how="left", validate="many_to_one")
@@ -87,9 +89,13 @@ def _build_2026_prediction_dataset(
     )
 
     for diff_name, (a_source, b_source) in TEAM_FEATURE_TO_2026_COLUMNS.items():
-        col_a = f"teamA_{a_source}"
-        col_b = f"teamB_{b_source}"
-        if col_a in merged.columns and col_b in merged.columns:
+        col_a = _find_first_existing_column(
+            merged, [f"teamA_{a_source}", f"teamA_{a_source}_x", f"teamA_{a_source}_y"]
+        )
+        col_b = _find_first_existing_column(
+            merged, [f"teamB_{b_source}", f"teamB_{b_source}_x", f"teamB_{b_source}_y"]
+        )
+        if col_a and col_b:
             merged[diff_name] = pd.to_numeric(merged[col_a], errors="coerce") - pd.to_numeric(
                 merged[col_b], errors="coerce"
             )
@@ -103,26 +109,48 @@ def _select_overlap_feature_columns(train_df: pd.DataFrame, prediction_df: pd.Da
         for column in DERIVABLE_DIFF_FEATURES_2026
         if column in train_df.columns and column in prediction_df.columns
     ]
-    if not overlap:
+    if len(overlap) < MIN_OVERLAP_FEATURE_COUNT:
         raise ValueError(
-            "No overlapping reduced feature columns found between historical matchups and 2026 prediction set."
+            "Insufficient overlapping reduced feature columns found between historical data and 2026 prediction set. "
+            f"Need >= {MIN_OVERLAP_FEATURE_COUNT}, found {len(overlap)}: {overlap}"
         )
     return overlap
 
 
+def _write_feature_list(path: Path, feature_cols: list[str]) -> None:
+    ensure_parent(path)
+    path.write_text("\n".join(feature_cols) + "\n", encoding="utf-8")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Train reduced-feature model and predict 2026 R64 matchups."
+    )
+    parser.add_argument("--historical-matchups-path", type=Path, default=None)
+    parser.add_argument("--team-features-2026-path", type=Path, default=TEAM_FEATURES_2026_REDUCED_PATH)
+    parser.add_argument("--tourney-matchups-2026-path", type=Path, default=TOURNEY_MATCHUPS_2026_PATH)
+    parser.add_argument("--model-output-path", type=Path, default=MODEL_ARTIFACT_2026_PATH)
+    parser.add_argument("--predictions-output-path", type=Path, default=PREDICTIONS_2026_PATH)
+    parser.add_argument("--feature-list-output-path", type=Path, default=FEATURE_LIST_2026_REDUCED_PATH)
+    return parser.parse_args()
+
+
 def train_and_predict_2026_reduced(
     *,
-    historical_matchups_path: Path = HISTORICAL_MATCHUPS_V2_PATH,
+    historical_matchups_path: Path | None = None,
     team_features_2026_path: Path = TEAM_FEATURES_2026_REDUCED_PATH,
     tourney_matchups_2026_path: Path = TOURNEY_MATCHUPS_2026_PATH,
     model_output_path: Path = MODEL_ARTIFACT_2026_PATH,
     predictions_output_path: Path = PREDICTIONS_2026_PATH,
-) -> tuple[Path, Path]:
-    if not historical_matchups_path.exists():
-        raise FileNotFoundError(
-            f"Missing historical reduced matchups: {historical_matchups_path}. "
-            "Build it first with scripts/build_features_v2.py."
+    feature_list_output_path: Path = FEATURE_LIST_2026_REDUCED_PATH,
+) -> tuple[Path, Path, Path]:
+    if historical_matchups_path is None:
+        historical_matchups_path = resolve_first_existing_path(
+            [HISTORICAL_MATCHUPS_V2_PATH, HISTORICAL_MATCHUPS_PROCESSED_PATH],
+            purpose="historical matchup dataset for reduced training",
         )
+    elif not historical_matchups_path.exists():
+        raise FileNotFoundError(f"Missing historical matchup dataset: {historical_matchups_path}.")
     if not team_features_2026_path.exists():
         raise FileNotFoundError(
             f"Missing 2026 reduced team features: {team_features_2026_path}. "
@@ -173,6 +201,7 @@ def train_and_predict_2026_reduced(
     ensure_parent(model_output_path)
     ensure_parent(predictions_output_path)
     save_model(model, model_output_path)
+    _write_feature_list(feature_list_output_path, feature_cols)
 
     save_cols = [
         "season",
@@ -189,12 +218,21 @@ def train_and_predict_2026_reduced(
     pred_df[final_cols].to_csv(predictions_output_path, index=False)
 
     print(f"[save] model artifact: {model_output_path}")
+    print(f"[save] reduced feature list: {feature_list_output_path}")
     print(f"[save] 2026 reduced predictions: {predictions_output_path} ({len(pred_df)} rows)")
-    return model_output_path, predictions_output_path
+    return model_output_path, predictions_output_path, feature_list_output_path
 
 
 def main() -> None:
-    train_and_predict_2026_reduced()
+    args = parse_args()
+    train_and_predict_2026_reduced(
+        historical_matchups_path=args.historical_matchups_path,
+        team_features_2026_path=args.team_features_2026_path,
+        tourney_matchups_2026_path=args.tourney_matchups_2026_path,
+        model_output_path=args.model_output_path,
+        predictions_output_path=args.predictions_output_path,
+        feature_list_output_path=args.feature_list_output_path,
+    )
 
 
 if __name__ == "__main__":

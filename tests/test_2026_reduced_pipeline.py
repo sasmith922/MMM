@@ -85,6 +85,7 @@ def test_train_predict_2026_reduced_writes_predictions(tmp_path: Path, monkeypat
     matchups_2026_path = tmp_path / "tourney_matchups_2026.csv"
     model_path = tmp_path / "models" / "xgboost_2026_reduced.joblib"
     predictions_path = tmp_path / "outputs" / "predictions" / "bracket_predictions_2026_reduced.csv"
+    feature_list_path = tmp_path / "outputs" / "reports" / "features_2026_reduced_used.txt"
 
     pd.DataFrame(
         {
@@ -119,19 +120,61 @@ def test_train_predict_2026_reduced_writes_predictions(tmp_path: Path, monkeypat
 
     monkeypatch.setattr(module, "build_model", _fake_build_model)
 
-    out_model_path, out_predictions_path = module.train_and_predict_2026_reduced(
+    out_model_path, out_predictions_path, out_feature_list_path = module.train_and_predict_2026_reduced(
         historical_matchups_path=historical_path,
         team_features_2026_path=team_features_2026_path,
         tourney_matchups_2026_path=matchups_2026_path,
         model_output_path=model_path,
         predictions_output_path=predictions_path,
+        feature_list_output_path=feature_list_path,
     )
 
     assert out_model_path.exists()
     assert out_predictions_path.exists()
+    assert out_feature_list_path.exists()
 
     preds = pd.read_csv(out_predictions_path)
     assert len(preds) == 2
     assert "win_prob_a" in preds.columns
     assert preds["win_prob_a"].between(0.0, 1.0).all()
     assert captured_model_name == ["xgboost"]
+
+
+def test_train_predict_2026_reduced_fails_when_overlap_too_small(tmp_path: Path) -> None:
+    module = _load_module(TRAIN_SCRIPT_PATH, "train_predict_2026_reduced_script_small_overlap")
+
+    historical_path = tmp_path / "historical_matchups_v2.csv"
+    team_features_2026_path = tmp_path / "team_features_2026_reduced.csv"
+    matchups_2026_path = tmp_path / "tourney_matchups_2026.csv"
+
+    pd.DataFrame(
+        {
+            "season": [2022, 2023],
+            "label": [1, 0],
+            "seed_diff": [-1, 2],
+        }
+    ).to_csv(historical_path, index=False)
+    _sample_2026_reduced_features().to_csv(team_features_2026_path, index=False)
+    pd.DataFrame(
+        {
+            "season": [2026],
+            "round": ["R64"],
+            "region": ["W"],
+            "teamA_name_norm": ["alpha"],
+            "teamB_name_norm": ["beta"],
+        }
+    ).to_csv(matchups_2026_path, index=False)
+
+    try:
+        module.train_and_predict_2026_reduced(
+            historical_matchups_path=historical_path,
+            team_features_2026_path=team_features_2026_path,
+            tourney_matchups_2026_path=matchups_2026_path,
+            model_output_path=tmp_path / "model.joblib",
+            predictions_output_path=tmp_path / "preds.csv",
+            feature_list_output_path=tmp_path / "features.txt",
+        )
+    except ValueError as exc:
+        assert "Insufficient overlapping reduced feature columns" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("Expected ValueError due to insufficient reduced feature overlap.")

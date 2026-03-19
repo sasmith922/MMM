@@ -33,3 +33,29 @@ This repository includes a dedicated 2026 reduced pipeline that is intentionally
 - Critical null checks for:
   - `team_name`, `team_name_norm`, `seed`, `win_pct`, `pre_tourney_adjoe`, `pre_tourney_adjde`
 
+## Reduced 2026 commands
+
+Use these scripts for the dedicated reduced-feature workflow (separate from full-feature pipelines):
+
+```bash
+# 1) Build/validate 2026 reduced data + first-round matchup file
+python scripts/build_2026_dataset.py
+
+# 2) Run held-out backtest on a prior year (train on seasons < YEAR)
+python scripts/run_backtest_reduced.py --test-year 2025
+
+# 3) Train reduced model and write 2026 matchup probabilities + feature list
+python scripts/train_predict_2026_reduced.py
+
+# 4) Generate full bracket-style 2026 breakdown + readable summary
+python scripts/predict_bracket_2026_reduced.py
+```
+
+Default outputs:
+
+- `outputs/reports/features_2026_reduced_used.txt`
+- `outputs/predictions/backtest_<YEAR>_reduced.csv`
+- `outputs/predictions/backtest_metrics_reduced.csv`
+- `outputs/predictions/bracket_predictions_2026_reduced.csv`
+- `outputs/predictions/bracket_breakdown_2026_reduced.csv`
+- `outputs/predictions/bracket_summary_2026_reduced.txt`

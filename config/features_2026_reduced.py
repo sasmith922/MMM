@@ -15,12 +15,20 @@ TOURNEY_MATCHUPS_2026_PATH = PROCESSED_DATA_DIR / "tourney_matchups_2026.csv"
 MODELING_DATASET_2026_PATH = PROCESSED_DATA_DIR / "modeling_dataset_2026_reduced.csv"
 MODEL_ARTIFACT_2026_PATH = PROJECT_ROOT / "models" / "xgboost_2026_reduced.joblib"
 PREDICTIONS_2026_PATH = PROJECT_ROOT / "outputs" / "predictions" / "bracket_predictions_2026_reduced.csv"
+BRACKET_BREAKDOWN_2026_PATH = PROJECT_ROOT / "outputs" / "predictions" / "bracket_breakdown_2026_reduced.csv"
+BRACKET_SUMMARY_2026_PATH = PROJECT_ROOT / "outputs" / "predictions" / "bracket_summary_2026_reduced.txt"
+BACKTEST_METRICS_REDUCED_PATH = PROJECT_ROOT / "outputs" / "predictions" / "backtest_metrics_reduced.csv"
+FEATURE_LIST_2026_REDUCED_PATH = PROJECT_ROOT / "outputs" / "reports" / "features_2026_reduced_used.txt"
 
 # Optional/auxiliary data files used by fallback and training modes.
 CBB26_RAW_PATH = DATA_DIR / "raw" / "cbb26.csv"
 HISTORICAL_TEAM_FEATURES_V2_PATH = PROJECT_ROOT / "data" / "processed_v2" / "team_features_v2.csv"
 HISTORICAL_MATCHUPS_V2_PATH = PROJECT_ROOT / "data" / "processed_v2" / "tournament_matchups_v2.csv"
+HISTORICAL_MATCHUPS_PROCESSED_PATH = PROCESSED_DATA_DIR / "tourney_matchups.csv"
 FEATURE_NOTES_2026_PATH = PROJECT_ROOT / "outputs" / "reports" / "2026_reduced_feature_notes.md"
+
+# Minimum viable overlap to avoid accidentally fitting on almost-empty signal.
+MIN_OVERLAP_FEATURE_COUNT = 3
 
 # Required identity columns that must exist in 2026 reduced team features.
 REQUIRED_ID_COLUMNS = [
@@ -78,6 +86,18 @@ PREFERRED_2026_REDUCED_FEATURES = [
 def ensure_parent(path: Path) -> None:
     """Create parent directory for output paths."""
     path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def resolve_first_existing_path(candidates: list[Path], *, purpose: str) -> Path:
+    """Return first existing candidate path; raise FileNotFoundError when none exist."""
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    candidate_text = "\n".join(f"- {path}" for path in candidates)
+    raise FileNotFoundError(
+        f"Could not find required {purpose}. Checked:\n{candidate_text}\n"
+        "Please build the required dataset(s) or pass an explicit path argument."
+    )
 
 
 def parse_seed_number(seed_value: object) -> float:
