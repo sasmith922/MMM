@@ -15,6 +15,12 @@ from typing import List, Optional
 import numpy as np
 import pandas as pd
 from xgboost import XGBClassifier
+import sys
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+SRC_DIR = ROOT_DIR / "src"
+sys.path.insert(0, str(SRC_DIR))
 
 from madness_model.config import XGB_CONFIG, XGB_MODEL_PATH
 from madness_model.baseline_model import NON_FEATURE_COLS, get_feature_cols

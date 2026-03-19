@@ -46,27 +46,32 @@ def _require_columns(df: pd.DataFrame, required_cols: list[str], table_name: str
         raise KeyError(f"{table_name} missing required columns: {missing}")
 
 
-def _coerce_team_profiles(team_profiles_df: pd.DataFrame) -> pd.DataFrame:
-    team_profiles = team_profiles_df.copy()
+def _coerce_team_profiles(team_profiles: pd.DataFrame) -> pd.DataFrame:
+    team_profiles = team_profiles.copy()
 
-    rename_map = {}
-    if "teamID" in team_profiles.columns and "team_id" not in team_profiles.columns:
-        rename_map["teamID"] = "team_id"
-    if "Season" in team_profiles.columns and "season" not in team_profiles.columns:
-        rename_map["Season"] = "season"
-    if rename_map:
-        team_profiles = team_profiles.rename(columns=rename_map)
+    if "team_id" not in team_profiles.columns and "kaggle_team_id" in team_profiles.columns:
+        team_profiles = team_profiles.rename(columns={"kaggle_team_id": "team_id"})
 
-    _require_columns(team_profiles, REQUIRED_TEAM_PROFILE_COLUMNS, "team_profiles_df")
+    team_profiles["season"] = pd.to_numeric(team_profiles["season"], errors="coerce")
+    team_profiles["team_id"] = pd.to_numeric(team_profiles["team_id"], errors="coerce")
+
+    bad = team_profiles["season"].isna() | team_profiles["team_id"].isna()
+    if bad.any():
+        print(f"Dropping {bad.sum()} team_profiles rows with missing season/team_id")
+        cols_to_show = [
+            c for c in ["season", "team_name", "canonical_team_name", "conference", "seed"]
+            if c in team_profiles.columns
+        ]
+        if cols_to_show:
+            print(team_profiles.loc[bad, cols_to_show].head(20).to_string(index=False))
+        team_profiles = team_profiles.loc[~bad].copy()
 
     team_profiles["season"] = pd.to_numeric(team_profiles["season"], errors="coerce")
     team_profiles["team_id"] = pd.to_numeric(team_profiles["team_id"], errors="coerce")
     team_profiles = team_profiles.dropna(subset=["season", "team_id"])
     team_profiles["season"] = team_profiles["season"].astype(int)
     team_profiles["team_id"] = team_profiles["team_id"].astype(int)
-    team_profiles = _dedupe_team_profiles(team_profiles)
     return team_profiles
-
 
 def _dedupe_team_profiles(team_profiles: pd.DataFrame) -> pd.DataFrame:
     deduped = team_profiles.copy()
