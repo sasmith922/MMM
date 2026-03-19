@@ -420,9 +420,7 @@ def _canonical_tourney_games(tourney_matchups_df: pd.DataFrame) -> pd.DataFrame:
     winner_rows["label"] = (winner_rows["winner_id"] == winner_rows["team1_id"]).astype(int)
 
     # Standard metadata columns.
-    if "game_id" in winner_rows.columns:
-        winner_rows["game_id"] = winner_rows["game_id"]
-    else:
+    if "game_id" not in winner_rows.columns:
         winner_rows["game_id"] = (
             winner_rows["season"].astype(str)
             + "_"
