@@ -316,3 +316,23 @@ def test_coerce_team_profiles_dedupes_by_preferred_completeness(tmp_path, monkey
     assert audit_path.exists()
     audit_df = pd.read_csv(audit_path)
     assert set(audit_df["team_id"]) == {10}
+
+
+def test_coerce_team_profiles_handles_kaggle_team_id_and_drops_missing_keys() -> None:
+    team_profiles = pd.DataFrame(
+        [
+            {"season": "2024", "kaggle_team_id": "11", "team_name": "Alpha"},
+            {"season": "2024", "kaggle_team_id": None, "team_name": "MissingTeam"},
+            {"season": None, "kaggle_team_id": "12", "team_name": "MissingSeason"},
+        ]
+    )
+
+    coerced = _coerce_team_profiles(team_profiles)
+
+    assert "team_id" in coerced.columns
+    assert len(coerced) == 1
+    row = coerced.iloc[0]
+    assert row["season"] == 2024
+    assert row["team_id"] == 11
+    assert pd.api.types.is_integer_dtype(coerced["season"])
+    assert pd.api.types.is_integer_dtype(coerced["team_id"])
