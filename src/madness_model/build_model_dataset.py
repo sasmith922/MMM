@@ -54,7 +54,6 @@ def _coerce_team_profiles(team_profiles: pd.DataFrame) -> pd.DataFrame:
 
     team_profiles["season"] = pd.to_numeric(team_profiles["season"], errors="coerce")
     team_profiles["team_id"] = pd.to_numeric(team_profiles["team_id"], errors="coerce")
-
     bad = team_profiles["season"].isna() | team_profiles["team_id"].isna()
     if bad.any():
         print(f"Dropping {bad.sum()} team_profiles rows with missing season/team_id")
@@ -66,12 +65,9 @@ def _coerce_team_profiles(team_profiles: pd.DataFrame) -> pd.DataFrame:
             print(team_profiles.loc[bad, cols_to_show].head(20).to_string(index=False))
         team_profiles = team_profiles.loc[~bad].copy()
 
-    team_profiles["season"] = pd.to_numeric(team_profiles["season"], errors="coerce")
-    team_profiles["team_id"] = pd.to_numeric(team_profiles["team_id"], errors="coerce")
-    team_profiles = team_profiles.dropna(subset=["season", "team_id"])
     team_profiles["season"] = team_profiles["season"].astype(int)
     team_profiles["team_id"] = team_profiles["team_id"].astype(int)
-    return team_profiles
+    return _dedupe_team_profiles(team_profiles)
 
 def _dedupe_team_profiles(team_profiles: pd.DataFrame) -> pd.DataFrame:
     deduped = team_profiles.copy()
@@ -87,21 +83,38 @@ def _dedupe_team_profiles(team_profiles: pd.DataFrame) -> pd.DataFrame:
     audit_path.parent.mkdir(parents=True, exist_ok=True)
     duplicates_audit.to_csv(audit_path, index=False)
 
-    deduped["__non_null_count"] = deduped.notna().sum(axis=1)
+    deduped["_non_null_count"] = deduped.notna().sum(axis=1)
+    deduped["_has_seed"] = deduped["seed"].notna().astype(int) if "seed" in deduped.columns else 0
+    deduped["_has_elo_pre_tourney"] = (
+        deduped["elo_pre_tourney"].notna().astype(int) if "elo_pre_tourney" in deduped.columns else 0
+    )
+    deduped["_has_team_name"] = deduped["team_name"].notna().astype(int) if "team_name" in deduped.columns else 0
+    deduped["_has_canonical_team_name"] = (
+        deduped["canonical_team_name"].notna().astype(int) if "canonical_team_name" in deduped.columns else 0
+    )
 
-    preference_columns = ["seed", "elo_pre_tourney", "team_name", "canonical_team_name"]
-    score_columns: list[str] = []
-    for column in preference_columns:
-        if column in deduped.columns:
-            score_col = f"__has_{column}"
-            deduped[score_col] = deduped[column].notna().astype(int)
-            score_columns.append(score_col)
-
-    sort_columns = ["season", "team_id", *score_columns, "__non_null_count"]
-    ascending = [True, True, *([False] * len(score_columns)), False]
+    sort_columns = [
+        "season",
+        "team_id",
+        "_has_seed",
+        "_has_elo_pre_tourney",
+        "_has_team_name",
+        "_has_canonical_team_name",
+        "_non_null_count",
+    ]
+    ascending = [True, True, False, False, False, False, False]
     deduped = deduped.sort_values(sort_columns, ascending=ascending, kind="mergesort")
     deduped = deduped.drop_duplicates(subset=["season", "team_id"], keep="first")
-    return deduped.drop(columns=[*score_columns, "__non_null_count"], errors="ignore")
+    return deduped.drop(
+        columns=[
+            "_non_null_count",
+            "_has_seed",
+            "_has_elo_pre_tourney",
+            "_has_team_name",
+            "_has_canonical_team_name",
+        ],
+        errors="ignore",
+    )
 
 
 def _validate_unique_team_profiles(team_profiles: pd.DataFrame, *, strict: bool) -> None:
