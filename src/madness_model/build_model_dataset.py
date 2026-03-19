@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 import warnings
 
 import numpy as np
@@ -36,6 +37,7 @@ DIFF_COLUMN_MAPPING: dict[str, str] = {
 }
 
 BOX_FEATURE_PREFIX = "box_"
+TEAM_PROFILES_DUPLICATES_AUDIT_PATH = Path("outputs/reports/team_profiles_duplicates_audit.csv")
 
 
 def _require_columns(df: pd.DataFrame, required_cols: list[str], table_name: str) -> None:
@@ -57,9 +59,44 @@ def _coerce_team_profiles(team_profiles_df: pd.DataFrame) -> pd.DataFrame:
 
     _require_columns(team_profiles, REQUIRED_TEAM_PROFILE_COLUMNS, "team_profiles_df")
 
+    team_profiles["season"] = pd.to_numeric(team_profiles["season"], errors="coerce")
+    team_profiles["team_id"] = pd.to_numeric(team_profiles["team_id"], errors="coerce")
+    team_profiles = team_profiles.dropna(subset=["season", "team_id"])
     team_profiles["season"] = team_profiles["season"].astype(int)
     team_profiles["team_id"] = team_profiles["team_id"].astype(int)
+    team_profiles = _dedupe_team_profiles(team_profiles)
     return team_profiles
+
+
+def _dedupe_team_profiles(team_profiles: pd.DataFrame) -> pd.DataFrame:
+    deduped = team_profiles.copy()
+    duplicate_mask = deduped.duplicated(subset=["season", "team_id"], keep=False)
+    if not duplicate_mask.any():
+        return deduped
+
+    duplicate_rows = int(duplicate_mask.sum())
+    print(f"Deduplicating {duplicate_rows} team_profiles rows across repeated (season, team_id) keys")
+
+    duplicates_audit = deduped.loc[duplicate_mask].copy()
+    audit_path = TEAM_PROFILES_DUPLICATES_AUDIT_PATH
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    duplicates_audit.to_csv(audit_path, index=False)
+
+    deduped["__non_null_count"] = deduped.notna().sum(axis=1)
+
+    preference_columns = ["seed", "elo_pre_tourney", "team_name", "canonical_team_name"]
+    score_columns: list[str] = []
+    for column in preference_columns:
+        if column in deduped.columns:
+            score_col = f"__has_{column}"
+            deduped[score_col] = deduped[column].notna().astype(int)
+            score_columns.append(score_col)
+
+    sort_columns = ["season", "team_id", *score_columns, "__non_null_count"]
+    ascending = [True, True, *([False] * len(score_columns)), False]
+    deduped = deduped.sort_values(sort_columns, ascending=ascending, kind="mergesort")
+    deduped = deduped.drop_duplicates(subset=["season", "team_id"], keep="first")
+    return deduped.drop(columns=[*score_columns, "__non_null_count"], errors="ignore")
 
 
 def _validate_unique_team_profiles(team_profiles: pd.DataFrame, *, strict: bool) -> None:
