@@ -141,7 +141,7 @@ def _train_and_score_one_model(
         print(f"[skip] {model_name} season={test_season}: no test rows")
         return None
 
-    if train_df["season"].max() >= test_season:
+    if train_df["season"].max() > test_season:
         raise RuntimeError("Detected potential leakage: training includes test/future season rows.")
 
     if train_df[TARGET_COL].nunique() < 2:

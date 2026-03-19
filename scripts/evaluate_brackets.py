@@ -8,6 +8,7 @@ analysis. It does not modify existing evaluation outputs; it writes to
 from __future__ import annotations
 
 import argparse
+import hashlib
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -168,7 +169,8 @@ def load_inputs(predictions_path: Path, actuals_path: Path) -> tuple[pd.DataFram
         raise KeyError("Actual matchup file must include a round or round_name column.")
 
     if actuals_df["round_name"].isna().any():
-        unknown_rounds = actuals_df.loc[actuals_df["round_name"].isna(), "round" if "round" in actuals_df.columns else "round_name"].unique()
+        round_col = "round" if "round" in actuals_df.columns else "round_name"
+        unknown_rounds = actuals_df.loc[actuals_df["round_name"].isna(), round_col].unique()
         raise ValueError(f"Could not canonicalize one or more round labels: {unknown_rounds}")
 
     actuals_df["actual_winner"] = np.where(
@@ -198,7 +200,9 @@ def align_predictions_to_actuals(predictions_df: pd.DataFrame, actuals_df: pd.Da
     expanded = expanded.sort_values(["season", "model_name", "teamA_id", "teamB_id", "is_swapped"])
     expanded = expanded.drop_duplicates(["season", "model_name", "teamA_id", "teamB_id"], keep="first")
 
-    game_keys = actuals_df[["season", "teamA_id", "teamB_id", "target", "actual_winner", "round_name"] + (["region"] if "region" in actuals_df.columns else [])]
+    base_cols = ["season", "teamA_id", "teamB_id", "target", "actual_winner", "round_name"]
+    extra_cols = ["region"] if "region" in actuals_df.columns else []
+    game_keys = actuals_df[base_cols + extra_cols]
     merged = game_keys.merge(expanded, on=["season", "teamA_id", "teamB_id"], how="left")
 
     missing_predictions = int(merged["pred_prob"].isna().sum())
@@ -309,15 +313,7 @@ def _simulate_from_nodes(
     round_reached_by_team: dict[int, str] = {}
 
     for node in game_nodes:
-        if node.dep_left_game_id is None:
-            team_a = node.teamA_actual
-        else:
-            team_a = winners_by_game[node.dep_left_game_id]
-
-        if node.dep_right_game_id is None:
-            team_b = node.teamB_actual
-        else:
-            team_b = winners_by_game[node.dep_right_game_id]
+        team_a, team_b = _resolve_game_teams(node, winners_by_game)
 
         prob_a = prob_lookup.get((team_a, team_b), 0.5)
         prob_a = float(np.clip(prob_a, 1e-6, 1 - 1e-6))
@@ -333,6 +329,20 @@ def _simulate_from_nodes(
         round_reached_by_team[loser] = node.round_name
 
     return SimulationRunResult(winners_by_game=winners_by_game, round_reached_by_team=round_reached_by_team)
+
+
+def _resolve_game_teams(node: BracketGameNode, winners_by_game: dict[str, int]) -> tuple[int, int]:
+    if node.dep_left_game_id is None:
+        team_a = node.teamA_actual
+    else:
+        team_a = winners_by_game[node.dep_left_game_id]
+
+    if node.dep_right_game_id is None:
+        team_b = node.teamB_actual
+    else:
+        team_b = winners_by_game[node.dep_right_game_id]
+
+    return team_a, team_b
 
 
 def _deterministic_bracket_metrics(
@@ -353,8 +363,7 @@ def _deterministic_bracket_metrics(
     predicted_finalists = set()
     for node in game_nodes:
         if node.round_name == "CHAMP":
-            left_winner = deterministic_result.winners_by_game[node.dep_left_game_id] if node.dep_left_game_id else node.teamA_actual
-            right_winner = deterministic_result.winners_by_game[node.dep_right_game_id] if node.dep_right_game_id else node.teamB_actual
+            left_winner, right_winner = _resolve_game_teams(node, deterministic_result.winners_by_game)
             predicted_finalists.update({left_winner, right_winner})
 
     predicted_round_teams: dict[str, set[int]] = {rn: set() for rn in ROUND_ORDER}
@@ -362,19 +371,12 @@ def _deterministic_bracket_metrics(
 
     for node in game_nodes:
         actual_round_teams[node.round_name].update({node.teamA_actual, node.teamB_actual})
-        if node.dep_left_game_id is None:
-            team_a = node.teamA_actual
-        else:
-            team_a = deterministic_result.winners_by_game[node.dep_left_game_id]
-        if node.dep_right_game_id is None:
-            team_b = node.teamB_actual
-        else:
-            team_b = deterministic_result.winners_by_game[node.dep_right_game_id]
+        team_a, team_b = _resolve_game_teams(node, deterministic_result.winners_by_game)
         predicted_round_teams[node.round_name].update({team_a, team_b})
 
-    true_runner_up = next(team for team in champ_participants if team != true_champion)
+    true_runner_up = next((team for team in champ_participants if team != true_champion), None)
     pred_runner_up = (
-        next(team for team in predicted_finalists if team != pred_champion)
+        next((team for team in predicted_finalists if team != pred_champion), None)
         if len(predicted_finalists) == 2
         else None
     )
@@ -385,7 +387,7 @@ def _deterministic_bracket_metrics(
         "true_champion": int(true_champion),
         "champion_correct": int(pred_champion == true_champion),
         "predicted_runner_up": int(pred_runner_up) if pred_runner_up is not None else np.nan,
-        "true_runner_up": int(true_runner_up),
+        "true_runner_up": int(true_runner_up) if true_runner_up is not None else np.nan,
         "runner_up_correct": int(pred_runner_up == true_runner_up) if pred_runner_up is not None else 0,
         "champ_game_participants_correct": int(len(predicted_finalists.intersection(champ_participants))),
         "final_four_correct": int(len(predicted_round_teams["F4"].intersection(actual_round_teams["F4"]))),
@@ -425,8 +427,8 @@ def evaluate(
         game_nodes = _build_season_game_nodes(season_model_df[["season", "teamA_id", "teamB_id", "actual_winner", "round_name"]])
         prob_lookup = _build_probability_lookup(season_model_df)
 
-        model_seed = sum(ord(ch) for ch in str(model_name))
-        rng = np.random.default_rng(seed=random_state + int(season) + model_seed)
+        model_seed_offset = int(hashlib.sha256(str(model_name).encode("utf-8")).hexdigest()[:16], 16)
+        rng = np.random.default_rng(seed=random_state + int(season) + model_seed_offset)
         deterministic_result = _simulate_from_nodes(game_nodes, prob_lookup, deterministic=True, rng=rng)
 
         deterministic_metrics = _deterministic_bracket_metrics(game_nodes, deterministic_result)
@@ -523,14 +525,7 @@ def evaluate(
         likely_champion = champion_ranking[0][0] if champion_ranking else np.nan
         predicted_round_teams: dict[str, set[int]] = {rn: set() for rn in ROUND_ORDER}
         for node in game_nodes:
-            if node.dep_left_game_id is None:
-                team_a = node.teamA_actual
-            else:
-                team_a = deterministic_result.winners_by_game[node.dep_left_game_id]
-            if node.dep_right_game_id is None:
-                team_b = node.teamB_actual
-            else:
-                team_b = deterministic_result.winners_by_game[node.dep_right_game_id]
+            team_a, team_b = _resolve_game_teams(node, deterministic_result.winners_by_game)
             predicted_round_teams[node.round_name].update({team_a, team_b})
         simulation_summary_rows.append(
             {
