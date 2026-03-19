@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 from madness_model.paths import DATA_DIR, PROCESSED_DATA_DIR, PROJECT_ROOT
 
@@ -78,3 +79,28 @@ def ensure_parent(path: Path) -> None:
     """Create parent directory for output paths."""
     path.parent.mkdir(parents=True, exist_ok=True)
 
+
+def parse_seed_number(seed_value: object) -> float:
+    """Parse integer seed number from values like 'W01', 'X16', or '12'."""
+    if seed_value is None:
+        return float("nan")
+    if isinstance(seed_value, float):
+        try:
+            if seed_value != seed_value:  # NaN
+                return float("nan")
+        except Exception:
+            return float("nan")
+    match = re.search(r"(\d+)", str(seed_value))
+    if match is None:
+        return float("nan")
+    return float(match.group(1))
+
+
+def parse_seed_region(seed_value: object) -> str | None:
+    """Parse region prefix from seeded values like 'W01'."""
+    if seed_value is None:
+        return None
+    match = re.match(r"([A-Za-z]+)", str(seed_value).strip())
+    if match is None:
+        return None
+    return match.group(1).upper()

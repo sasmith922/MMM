@@ -111,7 +111,13 @@ def test_train_predict_2026_reduced_writes_predictions(tmp_path: Path, monkeypat
     # Keep test fast: use logistic regression estimator in place of xgboost.
     from madness_model.model_utils import build_model as _build_model
 
-    monkeypatch.setattr(module, "build_model", lambda *_args, **_kwargs: _build_model("logistic_regression"))
+    captured_model_name: list[str] = []
+
+    def _fake_build_model(model_name: str, random_state: int = 42):
+        captured_model_name.append(model_name)
+        return _build_model("logistic_regression", random_state=random_state)
+
+    monkeypatch.setattr(module, "build_model", _fake_build_model)
 
     out_model_path, out_predictions_path = module.train_and_predict_2026_reduced(
         historical_matchups_path=historical_path,
@@ -128,4 +134,4 @@ def test_train_predict_2026_reduced_writes_predictions(tmp_path: Path, monkeypat
     assert len(preds) == 2
     assert "win_prob_a" in preds.columns
     assert preds["win_prob_a"].between(0.0, 1.0).all()
-
+    assert captured_model_name == ["xgboost"]

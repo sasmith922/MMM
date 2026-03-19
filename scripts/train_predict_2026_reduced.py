@@ -31,6 +31,7 @@ from config.features_2026_reduced import (
     TEAM_FEATURES_2026_REDUCED_PATH,
     TOURNEY_MATCHUPS_2026_PATH,
     ensure_parent,
+    parse_seed_number,
 )
 from madness_model.model_utils import build_model, build_train_test_matrices, save_model
 
@@ -51,16 +52,6 @@ TEAM_FEATURE_TO_2026_COLUMNS = {
     "win_pct_diff": ("win_pct", "win_pct"),
 }
 
-
-def _parse_seed_number(seed_value: object) -> float:
-    if pd.isna(seed_value):
-        return float("nan")
-    digits = "".join(ch for ch in str(seed_value) if ch.isdigit())
-    if not digits:
-        return float("nan")
-    return float(digits)
-
-
 def _build_2026_prediction_dataset(
     team_features_2026: pd.DataFrame,
     tourney_matchups_2026: pd.DataFrame,
@@ -75,7 +66,7 @@ def _build_2026_prediction_dataset(
 
     feat = team_features_2026.copy()
     if "seed_num" not in feat.columns:
-        feat["seed_num"] = feat["seed"].map(_parse_seed_number)
+        feat["seed_num"] = feat["seed"].map(parse_seed_number)
 
     a_cols = {
         "team_name_norm": "teamA_name_norm",
@@ -162,6 +153,8 @@ def train_and_predict_2026_reduced(
     train_df[feature_cols] = train_df[feature_cols].fillna(train_median).fillna(0.0)
     pred_matrix[feature_cols] = pred_matrix[feature_cols].fillna(train_median).fillna(0.0)
 
+    # `build_train_test_matrices` returns the encoded training feature schema we need
+    # for inference alignment. A one-row stub keeps this utility path centralized.
     test_stub = train_df.iloc[:1].copy()
     matrices = build_train_test_matrices(
         train_df=train_df,

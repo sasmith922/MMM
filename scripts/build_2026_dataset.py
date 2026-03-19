@@ -33,6 +33,8 @@ from config.features_2026_reduced import (
     TOURNAMENT_SEED_COLUMNS,
     TOURNEY_MATCHUPS_2026_PATH,
     ensure_parent,
+    parse_seed_number,
+    parse_seed_region,
 )
 
 ROUND64_SEED_PAIRS = [(1, 16), (8, 9), (5, 12), (4, 13), (6, 11), (3, 14), (7, 10), (2, 15)]
@@ -46,24 +48,6 @@ def normalize_team_name(name: str) -> str:
     text = re.sub(r"[^a-z0-9]+", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
-
-
-def _parse_seed_number(seed_value: object) -> float:
-    if pd.isna(seed_value):
-        return float("nan")
-    match = re.search(r"(\d+)", str(seed_value))
-    if match is None:
-        return float("nan")
-    return float(match.group(1))
-
-
-def _parse_region(seed_value: object) -> str | None:
-    if pd.isna(seed_value):
-        return None
-    match = re.match(r"([A-Za-z]+)", str(seed_value).strip())
-    if match is None:
-        return None
-    return match.group(1).upper()
 
 
 def _require_columns(df: pd.DataFrame, columns: list[str], table_name: str) -> None:
@@ -128,8 +112,8 @@ def _normalize_reduced_team_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def _build_round64_matchups(team_features_2026: pd.DataFrame) -> pd.DataFrame:
     teams = team_features_2026.copy()
-    teams["seed_num"] = teams["seed"].map(_parse_seed_number)
-    teams["region"] = teams["seed"].map(_parse_region)
+    teams["seed_num"] = teams["seed"].map(parse_seed_number)
+    teams["region"] = teams["seed"].map(parse_seed_region)
 
     if teams["seed_num"].isna().any():
         raise ValueError(
@@ -140,6 +124,8 @@ def _build_round64_matchups(team_features_2026: pd.DataFrame) -> pd.DataFrame:
     if teams["region"].notna().sum() == 0:
         teams["region"] = "ALL"
         print("[matchups] seed region prefix not present; falling back to pooled seed pairing.")
+    else:
+        teams["region"] = teams["region"].fillna("ALL")
 
     rows: list[dict[str, object]] = []
     for region, region_df in teams.groupby("region", dropna=False):
